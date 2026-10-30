@@ -1068,17 +1068,29 @@ class App(ctk.CTk):
                 wdg.bind("<Button-1>", lambda e: t.destroy())
             t.update_idletasks()
             w, h = t.winfo_reqwidth(), t.winfo_reqheight()
-            sw, sh = t.winfo_screenwidth(), t.winfo_screenheight()
             margin = int(t.winfo_fpixels("0.25i"))
+            left, top, sw, sh = 0, 0, t.winfo_screenwidth(), t.winfo_screenheight()
             bottom = int(t.winfo_fpixels("0.8i"))   # над панелью задач / Dock
+            if sys.platform == "win32":
+                # рабочая область основного экрана в настоящих пикселях (без панели задач);
+                # winfo_screenwidth при масштабе 125–150% даёт «уменьшенные» размеры
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    rc = wintypes.RECT()
+                    if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rc), 0):
+                        left, top, sw, sh = rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top
+                        bottom = margin
+                except Exception:
+                    pass
             pos = self.settings.get("toast_pos", "br")
             if pos in ("br", "tr"):
-                x = sw - w - margin
+                x = left + sw - w - margin
             elif pos in ("bl", "tl"):
-                x = margin
+                x = left + margin
             else:
-                x = (sw - w) // 2
-            y = margin + 10 if pos in ("tr", "tl", "tc") else sh - h - bottom
+                x = left + (sw - w) // 2
+            y = top + margin if pos in ("tr", "tl", "tc") else top + sh - h - bottom
             tk.Wm.geometry(t, f"{w}x{h}+{max(0, x)}+{max(0, y)}")
             t.deiconify()
             t.lift()
