@@ -5,7 +5,6 @@
 Сборки берутся из Releases публичного репозитория. Номер текущей сборки записан
 в build_info.py (его заполняет GitHub при сборке; при ручной сборке там 0).
 """
-import base64
 import json
 import os
 import platform
@@ -75,6 +74,32 @@ def can_self_update():
     return bool(getattr(sys, "frozen", False))
 
 
+def windows_script(pid, exe, new_exe, work, ulog):
+    def q(p):
+        return "'" + p.replace("'", "''") + "'"
+    return f"""$ErrorActionPreference = 'Continue'
+$log = {q(ulog)}
+function L($m) {{ Add-Content -LiteralPath $log -Value ((Get-Date -Format 'HH:mm:ss') + ' ' + $m) -Encoding UTF8 }}
+$exe = {q(exe)}; $new = {q(new_exe)}
+L "Скрипт замены начал работу, жду закрытия программы (pid {pid})"
+$ok = $false
+$deadline = (Get-Date).AddSeconds(90)
+while ((Get-Date) -lt $deadline) {{
+  $busy = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -eq $exe }})
+  if ($busy.Count -eq 0) {{
+    try {{ Move-Item -LiteralPath $new -Destination $exe -Force -ErrorAction Stop; L 'Файл заменён'; $ok = $true; break }}
+    catch {{ L ('Файл ещё занят: ' + $_.Exception.Message) }}
+  }}
+  Start-Sleep -Milliseconds 500
+}}
+if (-not $ok) {{ L 'Не удалось заменить файл за 90 секунд' }}
+Start-Sleep -Milliseconds 300
+Start-Process -FilePath $exe
+L 'Программа запущена'
+Remove-Item -LiteralPath {q(work)} -Recurse -Force -ErrorAction SilentlyContinue
+"""
+
+
 def install_and_restart(zip_path):
     """Распаковать скачанное, запустить замену после выхода программы. Вызывающий должен сразу выйти."""
     work = tempfile.mkdtemp(prefix="capslocker_update_")
@@ -92,43 +117,29 @@ def install_and_restart(zip_path):
         logdir = os.path.join(os.environ.get("LOCALAPPDATA", work), "Capslocker")
         os.makedirs(logdir, exist_ok=True)
         ulog = os.path.join(logdir, "update.log")
-
-        def q(p):
-            return "'" + p.replace("'", "''") + "'"
         # Ждём, пока файл программы освободится (у собранного exe два процесса — внешний
         # освобождает файл чуть позже внутреннего), потом заменяем и запускаем новую версию.
-        ps = f"""
-$ErrorActionPreference = 'Continue'
-Start-Transcript -Path {q(ulog)} -Force | Out-Null
-$exe = {q(exe)}; $new = {q(new_exe)}
-Write-Output "Жду закрытия программы (pid {pid})"
-$deadline = (Get-Date).AddSeconds(90)
-while ((Get-Date) -lt $deadline) {{
-  $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -eq $exe }}
-  if (-not $busy) {{
-    try {{ Move-Item -LiteralPath $new -Destination $exe -Force -ErrorAction Stop; Write-Output "Файл заменён"; $ok = $true; break }}
-    catch {{ Write-Output ("Файл ещё занят: " + $_.Exception.Message) }}
-  }}
-  Start-Sleep -Milliseconds 500
-}}
-if (-not $ok) {{ Write-Output "Не удалось заменить файл за 90 секунд" }}
-Start-Sleep -Milliseconds 300
-Start-Process -FilePath $exe
-Write-Output "Программа запущена"
-Remove-Item -LiteralPath {q(work)} -Recurse -Force -ErrorAction SilentlyContinue
-Stop-Transcript | Out-Null
-"""
-        enc = base64.b64encode(ps.encode("utf-16-le")).decode()
-        # отдельный независимый процесс: вне группы и задания программы, без окна
-        flags = 0x00000008 | 0x00000200 | 0x01000000 | 0x08000000
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW
-        args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                "-EncodedCommand", enc]
-        try:
-            subprocess.Popen(args, creationflags=flags, close_fds=True)
-        except OSError:
-            # если выход из «задания» запрещён — запускаем без этого флага
-            subprocess.Popen(args, creationflags=flags & ~0x01000000, close_fds=True)
+        script = os.path.join(work, "replace.ps1")
+        with open(script, "w", encoding="utf-8-sig") as f:
+            f.write(windows_script(pid, exe, new_exe, work, ulog))
+        with open(ulog, "w", encoding="utf-8") as f:
+            f.write(f"Запускаю замену: {script}\n")
+        args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-WindowStyle", "Hidden", "-File", script]
+        # независимый процесс: своя группа, без окна; пробуем выйти из «задания» программы
+        base = 0x00000200 | 0x08000000          # CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        for flags in (base | 0x01000000, base):  # | CREATE_BREAKAWAY_FROM_JOB
+            try:
+                p = subprocess.Popen(args, creationflags=flags, close_fds=True,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with open(ulog, "a", encoding="utf-8") as f:
+                    f.write(f"powershell запущен, pid {p.pid}, флаги {hex(flags)}\n")
+                break
+            except OSError as e:
+                with open(ulog, "a", encoding="utf-8") as f:
+                    f.write(f"не запустился с флагами {hex(flags)}: {e}\n")
+        else:
+            raise RuntimeError("Не удалось запустить замену файла")
     else:
         subprocess.run(["ditto", "-x", "-k", zip_path, work], check=True)
         new_app = os.path.join(work, "Capslocker.app")

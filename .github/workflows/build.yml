@@ -130,6 +130,19 @@ jobs:
           updater.install_and_restart(r'$t\new.zip')
           print('replacer started')
           "@
+          # 1) сам скрипт замены, синхронно (pid несуществующий — сразу к замене)
+          $py0 = @"
+          import updater, os
+          open(r'$t\sync.ps1','w',encoding='utf-8-sig').write(updater.windows_script(999999, r'$t\sync_target.exe', r'$t\sync_new.exe', r'$t\syncwork', r'$t\sync.log'))
+          "@
+          Copy-Item "$env:SystemRoot\System32\whoami.exe" "$t\sync_target.exe"
+          Copy-Item "$env:SystemRoot\System32\hostname.exe" "$t\sync_new.exe"
+          python -c $py0
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$t\sync.ps1"
+          $sl = Get-Content "$t\sync.log" -ErrorAction SilentlyContinue | Out-String
+          Write-Host "::notice title=sync script::$($sl -replace "`r?`n", ' | ')"
+          Get-Process hostname,sync_target -ErrorAction SilentlyContinue | Stop-Process -Force
+          # 2) как в программе: отдельный процесс
           $out = python -c $py 2>&1 | Out-String
           Write-Host "::notice title=updater python::$($out -replace "`r?`n", ' | ')"
           Start-Sleep -Seconds 15
