@@ -247,9 +247,14 @@ class App(ctk.CTk):
             self.punct_sw.select()
         ctk.CTkLabel(mine.body, text="Пунктуацию — только в программах (через запятую, например: telegram):",
                      font=(FONT, 10), text_color=MUTED).pack(anchor="w", pady=(6, 2))
-        self.punct_ex = ctk.CTkEntry(mine.body, height=28, font=(FONT, 12), fg_color=CARD_2, border_color=BORDER,
+        pr = ctk.CTkFrame(mine.body, fg_color="transparent")
+        pr.pack(fill="x")
+        self.punct_ex = ctk.CTkEntry(pr, height=28, font=(FONT, 12), fg_color=CARD_2, border_color=BORDER,
                                      text_color=TEXT, placeholder_text="пусто — во всех программах")
-        self.punct_ex.pack(fill="x")
+        self.punct_ex.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(pr, text="Выбрать…", width=84, height=28, font=(FONT, 12), fg_color="transparent",
+                      hover_color=BORDER, border_width=1, border_color=BORDER, text_color=GOLD,
+                      command=self.on_pick_punct_app).pack(side="left", padx=(6, 0))
         if self.settings.get("punct_only"):
             self.punct_ex.insert(0, self.settings["punct_only"])
         self.punct_ex.bind("<FocusOut>", lambda e: self.on_punct_exclude())
@@ -862,6 +867,25 @@ class App(ctk.CTk):
         self.settings["punct_only"] = self.punct_ex.get().strip()
         save_settings(self.settings)
 
+    def on_pick_punct_app(self):
+        from tkinter import filedialog
+        if sys.platform == "win32":
+            path = filedialog.askopenfilename(title="Выбери программу (например, Telegram.exe)",
+                                              filetypes=[("Программы", "*.exe"), ("Все файлы", "*.*")])
+        else:
+            path = filedialog.askdirectory(title="Выбери программу в «Программах»", initialdir="/Applications")
+        if not path:
+            return
+        name = os.path.basename(path.rstrip("/\\"))
+        name = name[:-4] if name.lower().endswith((".exe", ".app")) else name
+        cur = [x.strip() for x in self.punct_ex.get().replace(";", ",").split(",") if x.strip()]
+        if name.lower() not in [c.lower() for c in cur]:
+            cur.append(name)
+        self.punct_ex.delete(0, "end")
+        self.punct_ex.insert(0, ", ".join(cur))
+        self.on_punct_exclude()
+        self.set_status(f"Пунктуация будет проверяться в: {', '.join(cur)}", GREEN)
+
     def _front_app_name(self):
         try:
             import engine as _caps
@@ -877,8 +901,11 @@ class App(ctk.CTk):
                 if x.strip()]
         if not only:
             return True  # список пуст — во всех программах
-        name = self._front_app_name().lower().replace(".exe", "").replace(".app", "")
-        return any(e.replace(".exe", "").replace(".app", "") in name for e in only if e)
+        raw = self._front_app_name()
+        name = raw.lower().replace(".exe", "").replace(".app", "")
+        ok = any(e.replace(".exe", "").replace(".app", "") in name for e in only if e) if name else False
+        log(f"пунктуация: активная программа «{raw or 'не определена'}» → {'проверяю' if ok else 'не проверяю'}")
+        return ok
 
     def on_manual_spell(self):
         text = self.entry.get().strip()

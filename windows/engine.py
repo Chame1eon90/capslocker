@@ -92,6 +92,8 @@ user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.GetKeyState.restype = ctypes.c_short
 kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
                                                 ctypes.POINTER(wintypes.DWORD)]
 
