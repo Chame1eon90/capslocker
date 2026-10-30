@@ -3,7 +3,6 @@ name: Сборка (Windows и macOS)
 on:
   push:
     branches: [main]
-    paths-ignore: [".github/release-notes.json", ".github/workflows/release-notes.yml", ".github/workflows/cleanup-releases.yml", "CHANGELOG.md", "README.md"]
     paths: ["mac/**", "windows/**", ".github/workflows/build.yml"]
   workflow_dispatch: {}
 
