@@ -91,6 +91,7 @@ class App(ctk.CTk):
         self.settings = load_settings()
         self.engine = Engine()
         self.engine.mode = self.settings["mode"]
+        core.set_glossary(self.settings.get("glossary") or core.DEFAULT_GLOSSARY)
         self.engine.offline_engine = self.settings.get("offline_engine", "fast")
         if self.settings.get("online_service") not in ("google", "microsoft", "yandex", "mymemory"):
             self.settings["online_service"] = "google"
@@ -259,6 +260,13 @@ class App(ctk.CTk):
             self.punct_ex.insert(0, self.settings["punct_only"])
         self.punct_ex.bind("<FocusOut>", lambda e: self.on_punct_exclude())
         self.punct_ex.bind("<Return>", lambda e: self.on_punct_exclude())
+        gl = ctk.CTkFrame(mine.body, fg_color="transparent")
+        gl.pack(fill="x", pady=(8, 0))
+        ctk.CTkLabel(gl, text="Игровые слова (хил, дд, герои Overwatch…)", font=(FONT, 12),
+                     text_color=MUTED).pack(side="left")
+        ctk.CTkButton(gl, text="Словарь…", width=96, height=28, font=(FONT, 12), fg_color="transparent",
+                      hover_color=BORDER, border_width=1, border_color=BORDER, text_color=GOLD,
+                      command=self.on_glossary).pack(side="right")
         row2 = ctk.CTkFrame(mine.body, fg_color="transparent")
         row2.pack(fill="x", pady=(8, 0))
         ctk.CTkLabel(row2, text="Нажми на клавишу в рамке, чтобы поменять её", font=(FONT, 10),
@@ -362,6 +370,22 @@ class App(ctk.CTk):
         self.watch_switch.pack(side="left")
         if self.settings["watch_clipboard"]:
             self.watch_switch.select()
+        tr2 = ctk.CTkFrame(hist.body, fg_color="transparent")
+        tr2.pack(fill="x", pady=(0, 6))
+        self.toast_switch = ctk.CTkSwitch(tr2, text="Показывать перевод поверх окон (плашкой)", font=(FONT, 12),
+                                          text_color=TEXT, progress_color=GOLD, command=self.on_toast_toggle)
+        self.toast_switch.pack(side="left")
+        if self.settings.get("toast", True):
+            self.toast_switch.select()
+        self.toast_pos_map = {"Снизу справа": "br", "Сверху справа": "tr", "Сверху по центру": "tc",
+                              "Снизу по центру": "bc"}
+        tp = ctk.CTkOptionMenu(tr2, values=list(self.toast_pos_map), command=self.on_toast_pos, width=150,
+                               height=26, font=(FONT, 11), dropdown_font=(FONT, 11), fg_color=CARD_2,
+                               button_color=CARD_2, button_hover_color=BORDER, dropdown_fg_color=CARD,
+                               dropdown_hover_color=CARD_2, text_color=TEXT)
+        tp.pack(side="right")
+        tp.set(next((k for k, v in self.toast_pos_map.items() if v == self.settings.get("toast_pos", "br")),
+                    "Снизу справа"))
         ctk.CTkButton(top, text="Очистить", width=70, height=24, font=(FONT, 11), fg_color="transparent",
                       hover_color=BORDER, text_color=MUTED, command=self.clear_history).pack(side="right")
         # обычный список: вся вкладка и так прокручивается
@@ -693,6 +717,8 @@ class App(ctk.CTk):
                     self.update_btn.configure(text="Обновить", state="normal")
                 elif kind == "update_pct":
                     self.update_btn.configure(text=f"{item[1]}%")
+                elif kind == "toast":
+                    self._show_toast(item[1], item[2])
                 elif kind == "capsev":
                     self._on_caps_event(item[1], item[2])
                 elif kind == "show":
@@ -906,6 +932,93 @@ class App(ctk.CTk):
         ok = any(e.replace(".exe", "").replace(".app", "") in name for e in only if e) if name else False
         log(f"пунктуация: активная программа «{raw or 'не определена'}» → {'проверяю' if ok else 'не проверяю'}")
         return ok
+
+    def on_glossary(self):
+        if getattr(self, "_gl_win", None) and self._gl_win.winfo_exists():
+            self._gl_win.lift()
+            return
+        w = ctk.CTkToplevel(self)
+        self._gl_win = w
+        w.title("Словарь игровых слов")
+        w.geometry("560x620")
+        w.configure(fg_color=BG)
+        w.attributes("-topmost", True)
+        ctk.CTkLabel(w, text="Словарь игровых слов", font=(FONT, 18, "bold"), text_color=GOLD).pack(
+            anchor="w", padx=16, pady=(14, 2))
+        ctk.CTkLabel(w, text="Каждая строка: русское = english. Варианты — через «/».\n"
+                             "Эти слова корректор не трогает, а переводчик переводит именно так.\n"
+                             "Русские окончания учитываются сами: «хил» найдёт и «хила», и «хилом».",
+                     font=(FONT, 11), text_color=MUTED, justify="left").pack(anchor="w", padx=16)
+        box = ctk.CTkTextbox(w, font=("Consolas" if sys.platform == "win32" else "Menlo", 12),
+                             fg_color=CARD_2, text_color=TEXT, border_color=BORDER, border_width=1)
+        box.pack(fill="both", expand=True, padx=16, pady=10)
+        box.insert("1.0", self.settings.get("glossary") or core.DEFAULT_GLOSSARY)
+        br = ctk.CTkFrame(w, fg_color="transparent")
+        br.pack(fill="x", padx=16, pady=(0, 14))
+
+        def save():
+            text = box.get("1.0", "end").rstrip() + "\n"
+            self.settings["glossary"] = text
+            save_settings(self.settings)
+            core.set_glossary(text)
+            self.set_status("Словарь сохранён", GREEN)
+            w.destroy()
+
+        def reset():
+            if messagebox.askyesno(APP_NAME, "Вернуть стандартный словарь? Твои изменения пропадут.", parent=w):
+                box.delete("1.0", "end")
+                box.insert("1.0", core.DEFAULT_GLOSSARY)
+
+        ctk.CTkButton(br, text="Сохранить", width=120, height=32, font=(FONT, 13, "bold"), fg_color=GOLD,
+                      hover_color=GOLD_HOVER, text_color=BG, command=save).pack(side="right")
+        ctk.CTkButton(br, text="Стандартный словарь", width=160, height=32, font=(FONT, 12),
+                      fg_color="transparent", hover_color=BORDER, border_width=1, border_color=BORDER,
+                      text_color=MUTED, command=reset).pack(side="left")
+
+    def on_toast_toggle(self):
+        self.settings["toast"] = bool(self.toast_switch.get())
+        save_settings(self.settings)
+        if self.settings["toast"]:
+            self._show_toast("Hi! LF1M healer for raid", "Привет! Ищем ещё одного хила в рейд")
+
+    def on_toast_pos(self, label):
+        self.settings["toast_pos"] = self.toast_pos_map[label]
+        save_settings(self.settings)
+        self._show_toast("This is where translations will appear", "Здесь будут появляться переводы")
+
+    def _show_toast(self, original, translated):
+        """Плашка с переводом поверх всех окон на несколько секунд. Клик — закрыть."""
+        try:
+            old = getattr(self, "_toast", None)
+            if old is not None and old.winfo_exists():
+                old.destroy()
+            t = ctk.CTkToplevel(self)
+            self._toast = t
+            t.overrideredirect(True)
+            t.attributes("-topmost", True)
+            try:
+                t.attributes("-alpha", 0.95)
+            except Exception:
+                pass
+            t.configure(fg_color=GOLD)
+            box = ctk.CTkFrame(t, fg_color=CARD, corner_radius=0)
+            box.pack(fill="both", expand=True, padx=2, pady=2)
+            ctk.CTkLabel(box, text=translated, font=(FONT, 15, "bold"), text_color=TEXT, wraplength=420,
+                         justify="left", anchor="w").pack(fill="x", padx=14, pady=(10, 2))
+            ctk.CTkLabel(box, text=original, font=(FONT, 11), text_color=MUTED, wraplength=420,
+                         justify="left", anchor="w").pack(fill="x", padx=14, pady=(0, 10))
+            for wdg in (t, box) + tuple(box.winfo_children()):
+                wdg.bind("<Button-1>", lambda e: t.destroy())
+            t.update_idletasks()
+            w, h = t.winfo_reqwidth(), t.winfo_reqheight()
+            sw, sh = t.winfo_screenwidth(), t.winfo_screenheight()
+            pos = self.settings.get("toast_pos", "br")
+            x = sw - w - 24 if pos in ("br", "tr") else (sw - w) // 2
+            y = 40 if pos in ("tr", "tc") else sh - h - 90
+            t.geometry(f"+{x}+{y}")
+            t.after(min(14000, 4500 + 70 * len(translated)), lambda: t.winfo_exists() and t.destroy())
+        except Exception:
+            log("toast: " + traceback.format_exc())
 
     def on_manual_spell(self):
         text = self.entry.get().strip()
@@ -1203,6 +1316,8 @@ class App(ctk.CTk):
                 self.set_status("Перевожу входящее…", BLUE)
                 result, how = self.engine.translate(text, ("en", "ru"))
                 self.ui("history", text.strip(), result, ("en", "ru"), how)
+                if self.settings.get("toast", True):
+                    self.ui("toast", text.strip(), result)
                 self.set_status(f"Входящее переведено ({how})", GREEN)
             except Exception as e:
                 log("incoming failed: " + traceback.format_exc())

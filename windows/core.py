@@ -54,6 +54,7 @@ DEFAULT_SETTINGS = {
     "keep_on_top": True,
     "offline_engine": "fast",
     "unload_minutes": 10,
+    "glossary": None,
     "spell_punct": False,
     "punct_only": "",
     "online_service": "google",
@@ -731,6 +732,172 @@ class HyMTModel:
         return out.strip('"').strip()
 
 
+# ---------------------------------------------------------------- словарь игровых слов
+
+DEFAULT_GLOSSARY = """# Словарь игровых слов. Каждая строка: русское = english
+# Варианты через «/». Эти слова корректор не трогает, а переводчик переводит именно так.
+# Строки с # — комментарии. Можно удалять ненужное и добавлять своё.
+
+# ===== World of Warcraft =====
+хил/хила/хилу/хилом/хилы/хилов = healer/heal/heals
+танк/танка/танку/танком/танки = tank
+дд/дамагер/дамагера/дамагеры = dps/dd
+рдд = ranged dps
+мдд = melee dps
+кд = cooldown
+рейд/рейда/рейде/рейдом = raid
+данж/данжа/данже/данжи/подземелье = dungeon
+пати/пачка/пачку = group
+инвайт/инвайтни/инвай = invite
+бафф/баф/бафни = buff
+агр/агро = aggro
+вайп/вайпнулись = wipe
+мана/маны = mana
+ВЦ = Wailing Caverns/WC
+ДМ/Мёртвые копи = Deadmines/DM
+СФК = Shadowfang Keep/SFK
+БФД = Blackfathom Deeps/BFD
+ищу/ищем = LF
+ищем ещё одного = LF1M
+ищем ещё двоих = LF2M
+куплю = WTB
+продам = WTS
+спасибо = ty/thx
+поздравляю = gz/grats
+отошёл = afk
+сейчас вернусь = brb
+не за что = np
+
+# ===== Overwatch: герои (официальные русские имена и прозвища) =====
+# Танки
+D.Va/Дива/Дива = D.Va/Dva
+Кулак Смерти/Кулак/Думфист = Doomfist
+Королева Стервятников/Королева/Квин = Junker Queen
+Мауга = Mauga
+Ориса = Orisa
+Раматтра/Рама = Ramattra
+Райнхардт/Рейнхардт/Рейн/Райн = Reinhardt/Rein
+Турбосвин/Свин/Турбик = Roadhog/Hog
+Сигма = Sigma
+Уинстон/Винстон = Winston
+Таран/Хомяк/Хомячок = Wrecking Ball/Ball/Hammond
+Заря = Zarya
+Азарт = Hazard
+Домина = Domina
+# Урон
+Эш = Ashe
+Бастион = Bastion
+Кэссиди/Кэсс/Маккри = Cassidy/Cass
+Эхо = Echo
+Гэндзи/Генджи/Гендзи = Genji
+Хандзо/Ханзо = Hanzo
+Крысавчик/Крыса = Junkrat
+Мэй/Мей = Mei
+Фарра = Pharah
+Жнец/Рипер = Reaper
+Соджорн/Соджорна = Sojourn
+Солдат-76/Солдат/Солдат 76 = Soldier: 76/Soldier/S76
+Сомбра = Sombra
+Симметра/Сима = Symmetra/Sym
+Торбьорн/Торб = Torbjörn/Torbjorn/Torb
+Трейсер = Tracer
+Венчура = Venture
+Роковая вдова/Вдова = Widowmaker/Widow
+Фрейя = Freja
+Вендетта = Vendetta
+Ань Жань/Анран = Anran
+Эмре = Emre
+Сьерра = Sierra
+# Поддержка
+Ана = Ana
+Батист/Бап = Baptiste/Bap
+Бригитта/Бриг/Бригитте = Brigitte/Brig
+Иллари = Illari
+Джуно = Juno
+Кирико = Kiriko
+Ткач жизни/Ткач = Lifeweaver/Weaver
+Лусио/Лусьо = Lúcio/Lucio
+Ангел/Мерси = Mercy
+Мойра = Moira
+Дзенъятта/Дзен/Зеня = Zenyatta/Zen
+У Ян/Уян = Wuyang
+Мизуки = Mizuki
+Фика/Кошка с ранцем/Котик = Jetpack Cat/Fika
+
+# ===== Overwatch: термины =====
+ульта/ульту/ульты/ульт = ult/ultimate
+саппорт/сапорт/саппорты/хилка = support
+фланг/фланге = flank
+пуш/пушим/пушить = push
+фокус/фокусим = focus
+"""
+
+_GLOSSARY = {"ru2en": [], "en2ru": [], "protect": set(), "stems": set()}
+_RU_VOWELS = "аяоеёуюыиьй"
+
+
+def _ru_stem(word):
+    """Основа русского слова для поиска с окончаниями: «вдова» → «вдов», «Уян» → «уян»."""
+    w = word.lower()
+    if " " in w or not CYR.fullmatch(w[:1] or " ") or len(w) < 3:
+        return None
+    s = w.rstrip(_RU_VOWELS)
+    return s if len(s) >= 3 else None
+
+
+def _pattern(term, src):
+    stem = _ru_stem(term) if src == "ru" else None
+    if stem:
+        # основа + до 3 букв окончания: «вдову», «Уяна», «пушит»
+        return r"(?<![\w])" + re.escape(stem) + r"[а-яё]{0,3}(?![\w])"
+    return r"(?<![\w])" + re.escape(term) + r"(?![\w])"
+
+
+def set_glossary(text):
+    """Разобрать словарь «рус = eng»; варианты через «/»."""
+    ru2en, en2ru, protect, stems = [], [], set(), set()
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        ru, en = [x.strip() for x in line.split("=", 1)]
+        ru_forms = [f.strip() for f in ru.split("/") if f.strip()]
+        en_forms = [f.strip() for f in en.split("/") if f.strip()]
+        if not ru_forms or not en_forms:
+            continue
+        for f in ru_forms:
+            ru2en.append((re.compile(_pattern(f, "ru"), re.IGNORECASE), en_forms[0], len(f)))
+            st = _ru_stem(f)
+            if st:
+                stems.add(st)
+        for f in en_forms:
+            en2ru.append((re.compile(_pattern(f, "en"), re.IGNORECASE), ru_forms[0], len(f)))
+        for f in ru_forms + en_forms:
+            for w in f.split():
+                protect.add(w.lower())
+    ru2en.sort(key=lambda x: -x[2])   # длинные фразы — первыми
+    en2ru.sort(key=lambda x: -x[2])
+    _GLOSSARY.update(ru2en=ru2en, en2ru=en2ru, protect=protect, stems=stems)
+
+
+def is_protected(word):
+    w = word.lower()
+    if w in _GLOSSARY["protect"]:
+        return True
+    return any(w.startswith(s) and len(w) - len(s) <= 3 and CYR.search(w) for s in _GLOSSARY["stems"])
+
+
+def apply_glossary(text, src, tgt):
+    """Заменить словарные слова на перевод до отправки переводчику."""
+    pairs = _GLOSSARY["ru2en"] if (src, tgt) == ("ru", "en") else _GLOSSARY["en2ru"]
+    for rx, rep, _ in pairs:
+        text = rx.sub(rep, text)
+    return text
+
+
+set_glossary(DEFAULT_GLOSSARY)
+
+
 # ---------------------------------------------------------------- проверка ошибок
 
 class SpellChecker:
@@ -769,6 +936,7 @@ class SpellChecker:
     @staticmethod
     def _apply(text, fixes):
         out, n, last = text, 0, None
+        fixes = [f for f in fixes if not is_protected(text[f[0]:f[0] + f[1]].strip())]
         for pos, length, rep in sorted(fixes, key=lambda f: f[0], reverse=True):
             if last is not None and pos + length > last:
                 continue  # пересекающиеся правки пропускаем
@@ -908,7 +1076,7 @@ class OfflineSpeller:
             lang = "ru" if CYR.search(w) else "en"
             sc = self._dict(lang)
             fixed = w
-            if len(w) > 2 and not sc.known([w.lower()]):
+            if len(w) > 2 and not is_protected(w) and not sc.known([w.lower()]):
                 cand = sc.correction(w.lower())
                 if cand and cand != w.lower():
                     fixed = _match_case(w, cand)
@@ -942,7 +1110,10 @@ class OfflineSpeller:
                 for t in seg_b:
                     if re.match(r"\w", t):
                         src = words_a[wi] if wi < len(words_a) else t
-                        fixed.append(_match_case(src, t) if len(words_a) == len(words_b) else t)
+                        if len(words_a) == len(words_b) and is_protected(src):
+                            fixed.append(src)
+                        else:
+                            fixed.append(_match_case(src, t) if len(words_a) == len(words_b) else t)
                         wi += 1
                     else:
                         fixed.append(t)
@@ -953,7 +1124,7 @@ class OfflineSpeller:
                 wi = 0
                 for t in seg_a:
                     if re.match(r"\w", t):
-                        res.append(_match_case(t, words_b[wi]))
+                        res.append(t if is_protected(t) else _match_case(t, words_b[wi]))
                         wi += 1
                     else:
                         res.append(t)
@@ -1093,7 +1264,7 @@ class Engine:
             direction = auto
         if direction is None or auto != direction:
             return text, "без перевода"
-        result, how = self._translate_core(body, *direction)
+        result, how = self._translate_core(apply_glossary(body, *direction), *direction)
         return prefix + result, how
 
 
