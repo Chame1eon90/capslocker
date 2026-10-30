@@ -376,7 +376,11 @@ class MacInput:
     def start(self):
         if self.running:
             return True
-        if not has_permissions(prompt=False):
+        perm = has_permissions(prompt=False)
+        if getattr(self, "_last_perm", None) != perm:
+            log(f"разрешения macOS: {'есть' if perm else 'НЕТ (Универсальный доступ / Мониторинг ввода)'}")
+            self._last_perm = perm
+        if not perm:
             return False
         threading.Thread(target=self._tap_thread, daemon=True, name="tap").start()
         threading.Thread(target=self._worker, daemon=True, name="worker").start()
@@ -388,6 +392,7 @@ class MacInput:
             return False
         self.running = True
         self.apply_caps_remap()
+        log("перехват клавиатуры запущен, CapsLock переназначен")
         atexit.register(lambda: remap_caps(False))
         return True
 
