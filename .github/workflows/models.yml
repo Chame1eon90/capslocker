@@ -1,0 +1,33 @@
+name: Офлайн-модели (подготовка)
+
+on:
+  push:
+    branches: [main]
+    paths: ["tools/build_sage.py", ".github/workflows/models.yml"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Библиотеки
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "transformers<5" sentencepiece protobuf ctranslate2 tokenizers
+      - name: Конвертация и проверка SAGE
+        run: python tools/build_sage.py
+      - name: Выложить в Releases (тег models)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create models --repo "${{ github.repository }}" --title "Офлайн-модели" \
+            --notes "Модели для офлайн-режима. Программа скачивает их сама по кнопке." --prerelease || true
+          gh release upload models sage-ru-ct2-int8.zip --repo "${{ github.repository }}" --clobber
