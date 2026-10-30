@@ -152,6 +152,30 @@ jobs:
           if ($a -ne $b) { Write-Host "::error title=Обновление::Файл НЕ заменён"; exit 1 }
           Write-Host "::notice title=Обновление::Замена работает"
 
+      - name: Перезапуск после обновления (без чужих настроек PyInstaller)
+        working-directory: windows
+        shell: pwsh
+        run: |
+          Get-Process Capslocker,llama-server -ErrorAction SilentlyContinue | Stop-Process -Force
+          $py = @"
+          import os, subprocess, sys, time, updater
+          # как будто нас запустила старая версия: подсовываем её служебные переменные
+          os.environ['_PYI_APPLICATION_HOME_DIR'] = r'C:\nonexistent\_MEI_old'
+          os.environ['_PYI_ARCHIVE_FILE'] = r'C:\nonexistent\old.exe'
+          os.environ['_PYI_PARENT_PROCESS_LEVEL'] = '1'
+          p = subprocess.Popen([r'dist\Capslocker.exe'], env=updater.clean_env())
+          time.sleep(25)
+          alive = p.poll() is None
+          print('ALIVE' if alive else 'DEAD rc=%s' % p.returncode)
+          if alive:
+              p.kill()
+          sys.exit(0 if alive else 1)
+          "@
+          python -c $py
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error title=Перезапуск::Новая версия не запустилась"; exit 1 }
+          Write-Host "::notice title=Перезапуск::Новая версия запускается"
+          Get-Process Capslocker,llama-server -ErrorAction SilentlyContinue | Stop-Process -Force
+
       - name: Архив
         working-directory: windows
         shell: pwsh

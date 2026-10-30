@@ -100,6 +100,22 @@ Remove-Item -LiteralPath {q(work)} -Recurse -Force -ErrorAction SilentlyContinue
 """
 
 
+def clean_env():
+    """Окружение без служебных переменных PyInstaller: иначе новая версия решит, что она
+    «дочерний процесс» старой, и будет искать свои файлы в уже удалённой временной папке."""
+    env = {k: v for k, v in os.environ.items()
+           if not (k.upper().startswith("_PYI") or k.upper().startswith("_MEI"))}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass and "PATH" in env:
+        env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep)
+                                      if not p.lower().startswith(meipass.lower()))
+    for k in ("TCL_LIBRARY", "TK_LIBRARY", "SSL_CERT_FILE"):
+        if meipass and env.get(k, "").lower().startswith(meipass.lower()):
+            env.pop(k, None)
+    return env
+
+
 def install_and_restart(zip_path):
     """Распаковать скачанное, запустить замену после выхода программы. Вызывающий должен сразу выйти."""
     work = tempfile.mkdtemp(prefix="capslocker_update_")
@@ -130,7 +146,7 @@ def install_and_restart(zip_path):
         base = 0x00000200 | 0x08000000          # CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
         for flags in (base | 0x01000000, base):  # | CREATE_BREAKAWAY_FROM_JOB
             try:
-                p = subprocess.Popen(args, creationflags=flags, close_fds=True,
+                p = subprocess.Popen(args, creationflags=flags, close_fds=True, env=clean_env(),
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 with open(ulog, "a", encoding="utf-8") as f:
                     f.write(f"powershell запущен, pid {p.pid}, флаги {hex(flags)}\n")
@@ -151,4 +167,4 @@ def install_and_restart(zip_path):
             raise RuntimeError("Не нашёл, где лежит программа")
         script = (f'while kill -0 {pid} 2>/dev/null; do sleep 0.3; done; sleep 0.8; '
                   f'rm -rf "{app}" && mv "{new_app}" "{app}" && xattr -cr "{app}" ; open "{app}"; rm -rf "{work}"')
-        subprocess.Popen(["/bin/bash", "-c", script], start_new_session=True, close_fds=True)
+        subprocess.Popen(["/bin/bash", "-c", script], start_new_session=True, close_fds=True, env=clean_env())
