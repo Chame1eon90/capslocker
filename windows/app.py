@@ -181,6 +181,21 @@ class App(ctk.CTk):
         self._build_caps(self.tab_caps)
 
         # ---- режим
+        feat = ctk.CTkFrame(self.tab_tr, fg_color=CARD, corner_radius=12, border_width=1, border_color=BORDER)
+        feat.pack(fill="x", padx=18, pady=(0, 8))
+        self.tr_sw = ctk.CTkSwitch(feat, text="Перевод", font=(FONT, 13, "bold"), text_color=TEXT,
+                                   progress_color=GOLD, command=lambda: self.on_feature("tr_enabled", self.tr_sw))
+        self.tr_sw.pack(side="left", padx=(14, 10), pady=8)
+        self.spell_en_sw = ctk.CTkSwitch(feat, text="Проверка ошибок", font=(FONT, 13, "bold"), text_color=TEXT,
+                                         progress_color=GOLD,
+                                         command=lambda: self.on_feature("spell_enabled", self.spell_en_sw))
+        self.spell_en_sw.pack(side="left", padx=10, pady=8)
+        ctk.CTkLabel(feat, text="выключенная функция отпускает свою клавишу", font=(FONT, 10),
+                     text_color=MUTED).pack(side="right", padx=12)
+        if self.settings.get("tr_enabled", True):
+            self.tr_sw.select()
+        if self.settings.get("spell_enabled", True):
+            self.spell_en_sw.select()
         mode_row = ctk.CTkFrame(self.tab_tr, fg_color="transparent")
         mode_row.pack(fill="x", padx=18, pady=(4, 10))
         self.mode_map = {"Авто": "auto", "Онлайн": "online", "Офлайн": "offline"}
@@ -653,6 +668,10 @@ class App(ctk.CTk):
                 pystray.MenuItem("Открыть Капслокер", lambda i, it: self.ui("show"), default=True),
                 pystray.MenuItem("Исправление раскладки", lambda i, it: self.ui("caps_toggle"),
                                  checked=lambda it: self.caps_settings["enabled"]),
+                pystray.MenuItem("Перевод", lambda i, it: self.ui("feat_toggle", "tr_enabled"),
+                                 checked=lambda it: self.settings.get("tr_enabled", True)),
+                pystray.MenuItem("Проверка ошибок", lambda i, it: self.ui("feat_toggle", "spell_enabled"),
+                                 checked=lambda it: self.settings.get("spell_enabled", True)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Выход", lambda i, it: self.ui("quit")),
             )
@@ -734,6 +753,10 @@ class App(ctk.CTk):
                     self.update_btn.configure(text=f"{item[1]}%")
                 elif kind == "toast":
                     self._show_toast(item[1], item[2])
+                elif kind == "feat_toggle":
+                    sw = self.tr_sw if item[1] == "tr_enabled" else self.spell_en_sw
+                    sw.deselect() if self.settings.get(item[1], True) else sw.select()
+                    self.on_feature(item[1], sw)
                 elif kind == "capsev":
                     self._on_caps_event(item[1], item[2])
                 elif kind == "show":
@@ -1097,6 +1120,18 @@ class App(ctk.CTk):
             t.after(min(14000, 4500 + 70 * len(translated)), lambda: t.winfo_exists() and t.destroy())
         except Exception:
             log("toast: " + traceback.format_exc())
+    def on_feature(self, key, sw):
+        on = bool(sw.get())
+        self.settings[key] = on
+        save_settings(self.settings)
+        self._setup_hotkey()      # выключенная функция отпускает клавишу
+        try:
+            self._update_tray()
+        except Exception:
+            pass
+        name = "Перевод" if key == "tr_enabled" else "Проверка ошибок"
+        self.set_status(f"{name}: {'включено' if on else 'выключено'}", GREEN if on else MUTED)
+
     def on_manual_spell(self):
         text = self.entry.get().strip()
         if not text:
@@ -1373,7 +1408,7 @@ class App(ctk.CTk):
             pass
         while True:
             time.sleep(0.5)
-            if not self.settings.get("watch_clipboard") or self.busy:
+            if not self.settings.get("watch_clipboard") or not self.settings.get("tr_enabled", True) or self.busy:
                 continue
             try:
                 text = self._clip()
@@ -1416,6 +1451,8 @@ class App(ctk.CTk):
                 pass
         self.hotkey_handles = {}
         for slot, (key_name, label_name, default) in self.HOTKEY_SLOTS.items():
+            if not self.settings.get("tr_enabled" if slot == "tr" else "spell_enabled", True):
+                continue      # функция выключена — клавишу не занимаем
             hk = self.settings.get(key_name) or default
             if isinstance(hk, list):
                 hk = tuple(hk)   # сочетание скан-кодов; список библиотека не принимает
