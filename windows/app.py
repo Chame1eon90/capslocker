@@ -377,8 +377,8 @@ class App(ctk.CTk):
         self.toast_switch.pack(side="left")
         if self.settings.get("toast", True):
             self.toast_switch.select()
-        self.toast_pos_map = {"Снизу справа": "br", "Сверху справа": "tr", "Сверху по центру": "tc",
-                              "Снизу по центру": "bc"}
+        self.toast_pos_map = {"Снизу справа": "br", "Снизу слева": "bl", "Снизу по центру": "bc",
+                              "Сверху справа": "tr", "Сверху слева": "tl", "Сверху по центру": "tc"}
         tp = ctk.CTkOptionMenu(tr2, values=list(self.toast_pos_map), command=self.on_toast_pos, width=150,
                                height=26, font=(FONT, 11), dropdown_font=(FONT, 11), fg_color=CARD_2,
                                button_color=CARD_2, button_hover_color=BORDER, dropdown_fg_color=CARD,
@@ -1072,8 +1072,13 @@ class App(ctk.CTk):
             margin = int(t.winfo_fpixels("0.25i"))
             bottom = int(t.winfo_fpixels("0.8i"))   # над панелью задач / Dock
             pos = self.settings.get("toast_pos", "br")
-            x = sw - w - margin if pos in ("br", "tr") else (sw - w) // 2
-            y = margin + 10 if pos in ("tr", "tc") else sh - h - bottom
+            if pos in ("br", "tr"):
+                x = sw - w - margin
+            elif pos in ("bl", "tl"):
+                x = margin
+            else:
+                x = (sw - w) // 2
+            y = margin + 10 if pos in ("tr", "tl", "tc") else sh - h - bottom
             tk.Wm.geometry(t, f"{w}x{h}+{max(0, x)}+{max(0, y)}")
             t.deiconify()
             t.lift()
