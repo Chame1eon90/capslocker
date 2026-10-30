@@ -345,6 +345,13 @@ class App(ctk.CTk):
             font=(FONT, 11), dropdown_font=(FONT, 11), fg_color=CARD_2, button_color=CARD_2,
             button_hover_color=BORDER, dropdown_fg_color=CARD, dropdown_hover_color=CARD_2, text_color=TEXT)
         self.unload_menu.pack(side="right")
+        dr = ctk.CTkFrame(foot, fg_color="transparent")
+        dr.pack(fill="x", padx=16, pady=(6, 0))
+        ctk.CTkLabel(dr, text="Модели, настройки и журналы хранятся отдельно от программы", font=(FONT, 11),
+                     text_color=MUTED).pack(side="left")
+        ctk.CTkButton(dr, text="Папка с данными", width=120, height=24, font=(FONT, 11),
+                      fg_color="transparent", hover_color=BORDER, border_width=1, border_color=BORDER,
+                      text_color=GOLD, command=self.on_open_data).pack(side="right")
         cur = self.settings.get("unload_minutes", 10)
         self.unload_menu.set(next((k for k, v in self.unload_map.items() if v == cur), "10 мин"))
         self.progress = ctk.CTkProgressBar(foot, height=6, progress_color=GOLD, fg_color=CARD_2)
@@ -1262,6 +1269,16 @@ class App(ctk.CTk):
                         self.set_status(f"Офлайн-модель выгружена: не использовалась {mins} мин", MUTED)
             except Exception:
                 log("idle watcher: " + traceback.format_exc())
+
+    def on_open_data(self):
+        try:
+            if sys.platform == "win32":
+                os.startfile(core.DATA_DIR)
+            else:
+                import subprocess
+                subprocess.run(["open", core.DATA_DIR])
+        except Exception as e:
+            self.set_status(f"Не удалось открыть папку: {e}", RED)
 
     def on_unload_minutes(self, label):
         self.settings["unload_minutes"] = self.unload_map[label]
