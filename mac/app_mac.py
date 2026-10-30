@@ -13,6 +13,7 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 import core
+import updater
 import mac_input
 from mac_input import MacInput, hotkey_label
 from core import Engine, detect_direction, load_settings, save_settings, log, WOW_CHAT_LIMIT
@@ -169,11 +170,16 @@ class App(ctk.CTk):
         left = ctk.CTkFrame(header, fg_color="transparent")
         left.pack(side="left")
         ctk.CTkLabel(left, text="Капслокер", font=(FONT, 22, "bold"), text_color=GOLD).pack(anchor="w")
-        ctk.CTkLabel(left, text="Перевод и раскладка · Русский ⇄ English", font=(FONT, 12),
+        ctk.CTkLabel(left, text="Перевод и раскладка · Русский ⇄ English" +
+                     (f" · сборка {updater.BUILD}" if updater.BUILD else ""), font=(FONT, 12),
                      text_color=MUTED).pack(anchor="w")
         self.pin_switch = ctk.CTkSwitch(header, text="Поверх окон", font=(FONT, 12), text_color=MUTED,
                                         progress_color=GOLD, command=self.on_topmost)
         self.pin_switch.pack(side="right")
+        self.update_btn = ctk.CTkButton(header, text="Обновить", width=86, height=28, font=(FONT, 12),
+                                        fg_color="transparent", hover_color=BORDER, border_width=1,
+                                        border_color=BORDER, text_color=GOLD, command=self.on_update)
+        self.update_btn.pack(side="right", padx=(0, 10))
         if self.settings["keep_on_top"]:
             self.pin_switch.select()
 
@@ -365,6 +371,61 @@ class App(ctk.CTk):
             pass
         self.geometry(f"{w}x{h}")
         self.minsize(480, min(h, 600))
+
+    def on_update(self):
+        if getattr(self, "_updating", False):
+            return
+        self._updating = True
+        self.update_btn.configure(text="Проверяю…", state="disabled")
+
+        def work():
+            try:
+                info = updater.latest()
+                if not info:
+                    self.ui("info", "На GitHub пока нет сборки для этой системы.")
+                    return
+                num, url, size = info
+                if num <= updater.BUILD:
+                    self.ui("info", f"У тебя последняя версия (сборка {updater.BUILD}).")
+                    return
+                if not updater.can_self_update():
+                    self.ui("info", f"Есть сборка {num}. Скачай её со страницы Releases на GitHub.")
+                    return
+                self.ui("ask_update", num, url, size)
+            except Exception as e:
+                log("update check: " + traceback.format_exc())
+                self.ui("error", f"Не удалось проверить обновления:\n{e}")
+            finally:
+                self.ui("update_btn")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _do_update(self, num, url, size):
+        cur = f"сборка {updater.BUILD}" if updater.BUILD else "собрана вручную"
+        if not messagebox.askyesno(APP_NAME, f"Доступна новая версия — сборка {num} (у тебя {cur}).\n\n"
+                                             f"Скачать (~{max(1, size // 1048576)} МБ) и перезапустить программу?"):
+            return
+        self._updating = True
+        self.update_btn.configure(text="Скачиваю…", state="disabled")
+
+        def work():
+            try:
+                import tempfile
+                dest = os.path.join(tempfile.gettempdir(), updater.asset_name())
+
+                def prog(pct, msg):
+                    self.set_status(f"{msg} ({pct}%)", BLUE)
+                    self.ui("update_pct", pct)
+                updater.download(url, dest, prog)
+                self.set_status("Устанавливаю обновление…", BLUE)
+                updater.install_and_restart(dest)
+                self.ui("quit")
+            except Exception as e:
+                log("update failed: " + traceback.format_exc())
+                self.ui("error", f"Не удалось обновить:\n{e}")
+                self.ui("update_btn")
+
+        threading.Thread(target=work, daemon=True).start()
 
     def on_tab(self, label):
         key = self.tab_map[label]
@@ -642,6 +703,13 @@ class App(ctk.CTk):
                     self.spell_btn.configure(text=item[1])
                 elif kind == "error":
                     messagebox.showerror(APP_NAME, item[1])
+                elif kind == "ask_update":
+                    self._do_update(*item[1:])
+                elif kind == "update_btn":
+                    self._updating = False
+                    self.update_btn.configure(text="Обновить", state="normal")
+                elif kind == "update_pct":
+                    self.update_btn.configure(text=f"{item[1]}%")
                 elif kind == "perm":
                     self._show_perm_banner(item[1])
                 elif kind == "capsev":

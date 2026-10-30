@@ -45,6 +45,7 @@ jobs:
       - name: Сборка Капслокер.app
         working-directory: mac
         run: |
+          echo "BUILD = ${{ github.run_number }}" > build_info.py
           python3.12 -m PyInstaller --noconfirm --windowed --name Capslocker \
             --icon icon.png --osx-bundle-identifier com.capslocker.app \
             --add-data "icon.png:." \
@@ -86,6 +87,7 @@ jobs:
         working-directory: windows
         shell: pwsh
         run: |
+          Set-Content -Path build_info.py -Value "BUILD = ${{ github.run_number }}" -Encoding ascii
           Expand-Archive llama_runtime.zip -DestinationPath llama
           python -m PyInstaller --noconfirm --onefile --windowed --name Capslocker --icon icon.ico `
             --add-data "icon.ico;." --add-data "tray_on.png;." --add-data "tray_off.png;." --add-data "llama;llama" `
