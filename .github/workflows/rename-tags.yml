@@ -20,6 +20,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set +e
           git fetch --tags --force
           for old in $(git tag -l 'build-*' 'mac-build-*'); do
             case "$old" in
@@ -30,11 +31,8 @@ jobs:
             [ "$old" = "$new" ] && continue
             sha=$(git rev-list -n1 "$old")
             git tag -f "$new" "$sha"
-            git push -f origin "refs/tags/$new"
-            if gh release edit "$old" --tag "$new" --repo "${{ github.repository }}" >/dev/null; then
-              git push origin ":refs/tags/$old"
-              echo "$old → $new"
-            else
-              echo "::warning::не удалось переименовать $old"
-            fi
+            out=$(git push -f origin "refs/tags/$new" 2>&1) || { echo "::warning::push $new: ${out//$'\n'/ }"; continue; }
+            out=$(gh release edit "$old" --tag "$new" --repo "${{ github.repository }}" 2>&1) || { echo "::warning::edit $old: ${out//$'\n'/ }"; continue; }
+            out=$(git push origin ":refs/tags/$old" 2>&1) || echo "::warning::delete $old: ${out//$'\n'/ }"
+            echo "::notice::$old → $new"
           done
