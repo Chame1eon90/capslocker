@@ -5,8 +5,7 @@
 
 **Скачать:** [последняя версия](https://github.com/Chame1eon90/capslocker/releases/latest)
 - `Capslocker-Windows.zip` — для Windows 10/11;
-- `Capslocker-macOS-Apple-M.zip` — для Mac на чипах M1–M4;
-- `Capslocker-macOS-Intel.zip` — для Mac на Intel.
+- `Capslocker-macOS-Apple-M.zip` — для Mac на чипах M1–M4 (Mac на Intel больше не поддерживаются).
 
 Что менялось от сборки к сборке — в [истории изменений](CHANGELOG.md) и в описании каждой сборки в Releases.
 
@@ -60,7 +59,7 @@
 3. Программа живёт в трее рядом с часами; закрытие окна её не выключает.
 
 ### macOS
-1. Скачай архив под свой чип (меню  → «Об этом Mac»), распакуй и перетащи
+1. Скачай `Capslocker-macOS-Apple-M.zip`, распакуй и перетащи
    **Capslocker** в «Программы».
 2. Первый запуск: macOS заблокирует программу без платной подписи Apple. Открой
    **Системные настройки → Конфиденциальность и безопасность** и нажми

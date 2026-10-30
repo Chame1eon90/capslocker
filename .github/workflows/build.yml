@@ -17,8 +17,6 @@ jobs:
         include:
           - runner: macos-15
             label: Apple-M
-          - runner: macos-15-intel
-            label: Intel
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -120,7 +118,7 @@ jobs:
           log = subprocess.run(["git", "log", "--format=%s"] + rng, capture_output=True, text=True, encoding="utf-8").stdout
           items = [l for l in log.splitlines() if l.strip() and not l.startswith(("CI:", "Запуск сборки"))]
           print("## Что нового\n" + "\n".join("- " + l for l in reversed(items)) + "\n")
-          print("Windows — Capslocker-Windows.zip. Mac: Apple-M — чипы M1–M4, Intel — старые Mac. Файлы появляются по мере готовности.")
+          print("Windows — Capslocker-Windows.zip. Mac (чипы M1–M4) — Capslocker-macOS-Apple-M.zip. Файлы появляются по мере готовности.")
           PY
           cat notes.md
           gh release create "$TAG" --repo "${{ github.repository }}" --title "Капслокер (сборка ${{ github.run_number }})" \
@@ -258,7 +256,7 @@ jobs:
           log = subprocess.run(["git", "log", "--format=%s"] + rng, capture_output=True, text=True, encoding="utf-8").stdout
           items = [l for l in log.splitlines() if l.strip() and not l.startswith(("CI:", "Запуск сборки"))]
           print("## Что нового\n" + "\n".join("- " + l for l in reversed(items)) + "\n")
-          print("Windows — Capslocker-Windows.zip. Mac: Apple-M — чипы M1–M4, Intel — старые Mac. Файлы появляются по мере готовности.")
+          print("Windows — Capslocker-Windows.zip. Mac (чипы M1–M4) — Capslocker-macOS-Apple-M.zip. Файлы появляются по мере готовности.")
           PY
           cat notes.md
           gh release create "$TAG" --repo "${{ github.repository }}" --title "Капслокер (сборка ${{ github.run_number }})" \
