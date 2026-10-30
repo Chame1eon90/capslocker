@@ -240,6 +240,20 @@ class App(ctk.CTk):
         self.spell_sw.pack(anchor="w", pady=(8, 0))
         if self.settings.get("spell_before_translate", False):
             self.spell_sw.select()
+        self.punct_sw = ctk.CTkSwitch(mine.body, text="Проверять и пунктуацию (запятые, знаки)", font=(FONT, 12),
+                                      text_color=TEXT, progress_color=GOLD, command=self.on_punct)
+        self.punct_sw.pack(anchor="w", pady=(6, 0))
+        if self.settings.get("spell_punct", False):
+            self.punct_sw.select()
+        ctk.CTkLabel(mine.body, text="Пунктуацию — только в программах (через запятую, например: telegram):",
+                     font=(FONT, 10), text_color=MUTED).pack(anchor="w", pady=(6, 2))
+        self.punct_ex = ctk.CTkEntry(mine.body, height=28, font=(FONT, 12), fg_color=CARD_2, border_color=BORDER,
+                                     text_color=TEXT, placeholder_text="пусто — во всех программах")
+        self.punct_ex.pack(fill="x")
+        if self.settings.get("punct_only"):
+            self.punct_ex.insert(0, self.settings["punct_only"])
+        self.punct_ex.bind("<FocusOut>", lambda e: self.on_punct_exclude())
+        self.punct_ex.bind("<Return>", lambda e: self.on_punct_exclude())
         row2 = ctk.CTkFrame(mine.body, fg_color="transparent")
         row2.pack(fill="x", pady=(8, 0))
         ctk.CTkLabel(row2, text="Нажми на клавишу в рамке, чтобы поменять её", font=(FONT, 10),
@@ -613,6 +627,7 @@ class App(ctk.CTk):
     def hide_to_tray(self):
         try:
             self.on_exclude()
+            self.on_punct_exclude()
         except Exception:
             pass
         if self.tray is None:
@@ -828,6 +843,34 @@ class App(ctk.CTk):
         self.set_status("Перед переводом ошибки будут исправляться" if self.settings["spell_before_translate"]
                         else "Перед переводом ошибки не исправляются", GREEN)
 
+    def on_punct(self):
+        self.settings["spell_punct"] = bool(self.punct_sw.get())
+        save_settings(self.settings)
+        self.set_status("Пунктуация тоже проверяется" if self.settings["spell_punct"]
+                        else "Проверяется только орфография", GREEN)
+
+    def on_punct_exclude(self):
+        self.settings["punct_only"] = self.punct_ex.get().strip()
+        save_settings(self.settings)
+
+    def _front_app_name(self):
+        try:
+            import engine as _caps
+            return _caps.process_name(_caps.foreground())
+        except Exception:
+            return ""
+
+    def _punct_here(self):
+        """Проверять ли пунктуацию в программе, где сейчас печатают."""
+        if not self.settings.get("spell_punct", False):
+            return False
+        only = [x.strip().lower() for x in self.settings.get("punct_only", "").replace(";", ",").split(",")
+                if x.strip()]
+        if not only:
+            return True  # список пуст — во всех программах
+        name = self._front_app_name().lower().replace(".exe", "").replace(".app", "")
+        return any(e.replace(".exe", "").replace(".app", "") in name for e in only if e)
+
     def on_manual_spell(self):
         text = self.entry.get().strip()
         if not text:
@@ -837,7 +880,7 @@ class App(ctk.CTk):
         def work():
             try:
                 self.set_status("Проверяю ошибки…", BLUE)
-                fixed, n, how = self.engine.spell(text)
+                fixed, n, how = self.engine.spell(text, punctuation=self.settings.get("spell_punct", False))
                 self._copy(fixed)
                 if n:
                     self.ui("history", text, fixed, "spell", how)
@@ -1160,6 +1203,7 @@ class App(ctk.CTk):
                 old_clip = self._clip()
             except Exception:
                 pass
+            punct = self._punct_here()
             marker = "⁣wowtr⁣"
             selection = False
             text = marker
@@ -1190,7 +1234,7 @@ class App(ctk.CTk):
                 return
             if slot == "spell":
                 self.set_status("Проверяю ошибки…", BLUE)
-                result, n, how = self.engine.spell(text)
+                result, n, how = self.engine.spell(text, punctuation=punct)
                 if not n:
                     self._copy(old_clip)
                     self.set_status("Ошибок не нашёл", GREEN)
@@ -1199,7 +1243,7 @@ class App(ctk.CTk):
                 src_text = text
                 if self.settings.get("spell_before_translate", False) and core.CYR.search(text):
                     try:
-                        src_text, _, _ = self.engine.spell(text)
+                        src_text, _, _ = self.engine.spell(text, punctuation=punct)
                     except Exception:
                         src_text = text  # проверка недоступна — переводим как есть
                 self.set_status("Перевожу…", BLUE)

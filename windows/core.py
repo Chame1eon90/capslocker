@@ -54,6 +54,8 @@ DEFAULT_SETTINGS = {
     "keep_on_top": True,
     "offline_engine": "fast",
     "unload_minutes": 10,
+    "spell_punct": False,
+    "punct_only": "",
     "online_service": "google",
     "online_fallback": True,
 }
@@ -741,16 +743,26 @@ class SpellChecker:
         fixes = [(e["pos"], e["len"], e["s"][0]) for e in json.loads(raw) if e.get("s")]
         return fixes
 
-    def _languagetool(self, text, timeout):
+    PUNCT_CATEGORIES = {"PUNCTUATION", "TYPOGRAPHY"}
+
+    def _languagetool(self, text, timeout, spelling=True, punctuation=False):
         lang = "ru-RU" if CYR.search(text) else "en-US"
         body = urllib.parse.urlencode({"text": text, "language": lang, "level": "default"}).encode("utf-8")
         raw = _http("https://api.languagetool.org/v2/check", data=body, timeout=timeout + 2,
                     headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"})
         fixes = []
         for m in json.loads(raw).get("matches", []):
-            kind = (m.get("rule", {}).get("issueType") or "").lower()
+            rule = m.get("rule", {})
+            kind = (rule.get("issueType") or "").lower()
+            cat = (rule.get("category", {}).get("id") or "").upper()
             reps = m.get("replacements") or []
-            if reps and kind in ("misspelling", "typographical", "grammar"):
+            if not reps:
+                continue
+            # только знаки препинания и пробелы; заглавные буквы и стиль не трогаем
+            is_punct = cat in self.PUNCT_CATEGORIES or "COMMA" in (rule.get("id") or "")
+            if cat == "CASING":
+                continue
+            if (punctuation and is_punct) or (spelling and not is_punct and kind in ("misspelling", "grammar")):
                 fixes.append((m["offset"], m["length"], reps[0]["value"]))
         return fixes
 
@@ -766,17 +778,32 @@ class SpellChecker:
             last = pos
         return out, n
 
-    def check(self, text, timeout=4):
-        """Возвращает (исправленный текст, сколько исправлений, сервис)."""
+    def check(self, text, timeout=4, punctuation=False):
+        """Возвращает (исправленный текст, сколько исправлений, сервис).
+        punctuation=True — после орфографии ещё и знаки препинания (LanguageTool)."""
         errors = []
-        for name, fn in (("Яндекс.Спеллер", self._yandex), ("LanguageTool", self._languagetool)):
+        fixed, n, name = None, 0, ""
+        try:
+            fixed, n = self._apply(text, self._yandex(text, timeout))
+            name = "Яндекс.Спеллер"
+        except Exception as e:
+            log(f"spell Яндекс.Спеллер failed: {e!r}")
+            errors.append(f"Яндекс.Спеллер: {e}")
+        if fixed is None or punctuation:
+            src = text if fixed is None else fixed
             try:
-                fixed, n = self._apply(text, fn(text, timeout))
-                return fixed, n, name
+                fx = self._languagetool(src, timeout, spelling=fixed is None, punctuation=punctuation)
+                fixed, n2 = self._apply(src, fx)
+                n += n2
+                name = "LanguageTool" if not name else name + " + LanguageTool"
             except Exception as e:
-                log(f"spell {name} failed: {e!r}")
-                errors.append(f"{name}: {e}")
-        raise RuntimeError("Проверка ошибок недоступна (" + "; ".join(errors)[:160] + ")")
+                log(f"spell LanguageTool failed: {e!r}")
+                errors.append(f"LanguageTool: {e}")
+                if fixed is None:
+                    fixed = None
+        if fixed is None:
+            raise RuntimeError("Проверка ошибок недоступна (" + "; ".join(errors)[:160] + ")")
+        return fixed, n, name
 
 
 class Engine:
@@ -841,8 +868,8 @@ class Engine:
             result, how = self._offline(text, src, tgt)
             return result, how + " (нет сети)"
 
-    def spell(self, text):
-        """Исправить опечатки. Команды чата вроде «/g » и «/w Ник » не трогаем."""
+    def spell(self, text, punctuation=False):
+        """Исправить опечатки (и, если нужно, пунктуацию). Команды чата «/g », «/w Ник » не трогаем."""
         text = text.strip()
         if not text:
             return text, 0, ""
@@ -850,7 +877,7 @@ class Engine:
         m = WHISPER_CMD.match(text) or SLASH_CMD.match(text)
         if m:
             prefix, body = m.group(1), m.group(2)
-        fixed, n, how = self.speller.check(body)
+        fixed, n, how = self.speller.check(body, punctuation=punctuation)
         return prefix + fixed, n, how
 
     def translate(self, text, direction=None):
