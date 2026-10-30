@@ -72,8 +72,16 @@ CYR = re.compile(r"[А-Яа-яЁё]")
 LAT = re.compile(r"[A-Za-z]")
 
 
+LOG_MAX_BYTES = 512 * 1024   # журнал не больше ~0,5 МБ: старая часть уходит в log.old.txt
+
+
 def log(msg):
     try:
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX_BYTES:
+            old = os.path.join(DATA_DIR, "log.old.txt")
+            if os.path.exists(old):
+                os.remove(old)
+            os.replace(LOG_FILE, old)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
     except Exception:
