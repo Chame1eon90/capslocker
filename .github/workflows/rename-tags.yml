@@ -30,9 +30,8 @@ jobs:
             esac
             [ "$old" = "$new" ] && continue
             sha=$(git rev-list -n1 "$old")
-            git tag -f "$new" "$sha"
-            out=$(git push -f origin "refs/tags/$new" 2>&1) || { echo "::warning::push $new: ${out//$'\n'/ }"; continue; }
-            out=$(gh release edit "$old" --tag "$new" --repo "${{ github.repository }}" 2>&1) || { echo "::warning::edit $old: ${out//$'\n'/ }"; continue; }
-            out=$(git push origin ":refs/tags/$old" 2>&1) || echo "::warning::delete $old: ${out//$'\n'/ }"
+            # новый тег создаёт сам GitHub (через релиз) — на том же коммите, что и старый
+            out=$(gh release edit "$old" --tag "$new" --target "$sha" --repo "${{ github.repository }}" 2>&1) || { echo "::warning::edit $old: ${out//$'\n'/ }"; continue; }
+            out=$(gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/$old" 2>&1) || echo "::warning::delete $old: ${out//$'\n'/ }"
             echo "::notice::$old → $new"
           done
