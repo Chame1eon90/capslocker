@@ -109,7 +109,7 @@ jobs:
         run: |
           $p = Start-Process -FilePath dist\Capslocker.exe -PassThru
           Start-Sleep -Seconds 25
-          if ($p.HasExited) { Write-Host "Упала при запуске"; Get-Content "$env:LOCALAPPDATA\Capslocker\log.txt" -ErrorAction SilentlyContinue; exit 1 }
+          if ($p.HasExited) { $l = Get-Content "$env:LOCALAPPDATA\Capslocker\log.txt" -ErrorAction SilentlyContinue | Out-String; Write-Host "::error title=Запуск::Упала при запуске | $($l -replace "`r?`n", ' | ')"; exit 1 }
           Write-Host "Запустилась и работает"
           Get-Process Capslocker -ErrorAction SilentlyContinue | Stop-Process -Force
           Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -128,12 +128,14 @@ jobs:
           updater.install_and_restart(r'$t\new.zip')
           print('replacer started')
           "@
-          python -c $py
-          Start-Sleep -Seconds 12
-          Get-Content "$env:LOCALAPPDATA\Capslocker\update.log" -ErrorAction SilentlyContinue
+          $out = python -c $py 2>&1 | Out-String
+          Write-Host "::notice title=updater python::$($out -replace "`r?`n", ' | ')"
+          Start-Sleep -Seconds 15
+          $log = Get-Content "$env:LOCALAPPDATA\Capslocker\update.log" -ErrorAction SilentlyContinue | Out-String
+          Write-Host "::notice title=update.log::$($log -replace "`r?`n", ' | ')"
           $a = (Get-FileHash "$t\Capslocker.exe").Hash; $b = (Get-FileHash "$env:SystemRoot\System32\hostname.exe").Hash
-          if ($a -ne $b) { Write-Host "Файл НЕ заменён"; exit 1 }
-          Write-Host "Замена работает"
+          if ($a -ne $b) { Write-Host "::error title=Обновление::Файл НЕ заменён"; exit 1 }
+          Write-Host "::notice title=Обновление::Замена работает"
 
       - name: Архив
         working-directory: windows
