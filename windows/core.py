@@ -54,7 +54,6 @@ DEFAULT_SETTINGS = {
     "keep_on_top": True,
     "offline_engine": "fast",
     "unload_minutes": 10,
-    "spell_before_translate": True,
     "online_service": "google",
     "online_fallback": True,
 }

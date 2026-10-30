@@ -119,7 +119,7 @@ class App(ctk.CTk):
         self.binding = False
         self.kb = None
         self.hotkey_handles = {}
-        self.settings.setdefault("spell_before_translate", True)
+        self.settings.pop("spell_before_translate", None)
         self.own_clip = set()
         self.last_clip = None
         self.history_items = []
@@ -229,11 +229,6 @@ class App(ctk.CTk):
                                        border_width=1, border_color=GOLD, text_color=GOLD,
                                        command=lambda: self.on_rebind("spell"))
         self.spell_btn.pack(side="left", padx=8)
-        self.spell_sw = ctk.CTkSwitch(mine.body, text="Исправлять ошибки перед переводом", font=(FONT, 12),
-                                      text_color=TEXT, progress_color=GOLD, command=self.on_spell_before)
-        self.spell_sw.pack(anchor="w", pady=(8, 0))
-        if self.settings.get("spell_before_translate", True):
-            self.spell_sw.select()
         row2 = ctk.CTkFrame(mine.body, fg_color="transparent")
         row2.pack(fill="x", pady=(8, 0))
         ctk.CTkLabel(row2, text="Нажми на клавишу в рамке, чтобы поменять её", font=(FONT, 10),
@@ -750,10 +745,6 @@ class App(ctk.CTk):
         key, lab, default = self.HOTKEY_SLOTS[slot]
         return self.settings.get(lab) or nice_key(self.settings.get(key) or default)
 
-    def on_spell_before(self):
-        self.settings["spell_before_translate"] = bool(self.spell_sw.get())
-        save_settings(self.settings)
-
     def on_manual_spell(self):
         text = self.entry.get().strip()
         if not text:
@@ -1122,14 +1113,8 @@ class App(ctk.CTk):
                     self.set_status("Ошибок не нашёл", GREEN)
                     return
             else:
-                src_text = text
-                if self.settings.get("spell_before_translate", True) and core.CYR.search(text):
-                    try:
-                        src_text, n, _ = self.engine.spell(text)
-                    except Exception:
-                        src_text = text  # проверка недоступна — переводим как есть
                 self.set_status("Перевожу…", BLUE)
-                result, how = self.engine.translate(src_text, ("ru", "en"))
+                result, how = self.engine.translate(text, ("ru", "en"))
             if selection and text != text.strip():
                 # сохраняем пробелы по краям выделения
                 lead = text[:len(text) - len(text.lstrip())]
