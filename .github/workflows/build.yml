@@ -113,6 +113,28 @@ jobs:
           Write-Host "Запустилась и работает"
           Get-Process Capslocker -ErrorAction SilentlyContinue | Stop-Process -Force
           Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force
+      - name: Проверка замены файла при обновлении
+        working-directory: windows
+        shell: pwsh
+        run: |
+          $t = Join-Path $env:RUNNER_TEMP "upd"; New-Item -ItemType Directory -Force $t | Out-Null
+          Copy-Item "$env:SystemRoot\System32\whoami.exe" "$t\Capslocker.exe"
+          New-Item -ItemType Directory -Force "$t\pkg\Капслокер" | Out-Null
+          Copy-Item "$env:SystemRoot\System32\hostname.exe" "$t\pkg\Капслокер\Capslocker.exe"
+          Compress-Archive -Path "$t\pkg\Капслокер" -DestinationPath "$t\new.zip" -Force
+          $py = @"
+          import sys, updater
+          sys.executable = r'$t\Capslocker.exe'
+          updater.install_and_restart(r'$t\new.zip')
+          print('replacer started')
+          "@
+          python -c $py
+          Start-Sleep -Seconds 12
+          Get-Content "$env:LOCALAPPDATA\Capslocker\update.log" -ErrorAction SilentlyContinue
+          $a = (Get-FileHash "$t\Capslocker.exe").Hash; $b = (Get-FileHash "$env:SystemRoot\System32\hostname.exe").Hash
+          if ($a -ne $b) { Write-Host "Файл НЕ заменён"; exit 1 }
+          Write-Host "Замена работает"
+
       - name: Архив
         working-directory: windows
         shell: pwsh
