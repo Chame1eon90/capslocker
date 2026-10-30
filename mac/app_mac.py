@@ -69,7 +69,8 @@ class Card(ctk.CTkFrame):
 class HistoryItem(ctk.CTkFrame):
     def __init__(self, master, original, translated, direction, how, on_copy):
         super().__init__(master, fg_color=CARD_2, corner_radius=10)
-        arrow = "RU → EN" if direction == ("ru", "en") else "EN → RU"
+        arrow = ("RU → EN" if direction == ("ru", "en") else "EN → RU" if direction == ("en", "ru")
+                 else "Исправлены ошибки")
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=10, pady=(8, 0))
         ctk.CTkLabel(top, text=f"{arrow}  ·  {how}  ·  {time.strftime('%H:%M')}",
@@ -118,7 +119,8 @@ class App(ctk.CTk):
         self.downloading = False
         self.binding = False
         self.kb = None
-        self.hotkey_handle = None
+        self.hotkey_handles = {}
+        self.settings.setdefault("spell_before_translate", True)
         self.own_clip = set()
         self.last_clip = None
         self.history_items = []
@@ -151,10 +153,12 @@ class App(ctk.CTk):
         threading.Thread(target=self._idle_watcher, daemon=True).start()
         self.caps_engine = MacInput(self.caps_settings, self.call_main,
                                     on_event=lambda k, t: self.ui("capsev", k, t))
-        self.caps_engine.on_hotkey = lambda: threading.Thread(target=self._hotkey_work, daemon=True).start()
-        hk = self.settings.get("mac_hotkey")
-        if isinstance(hk, dict):
-            self.caps_engine.hotkey = hk
+        self.caps_engine.on_hotkey = lambda slot: threading.Thread(target=self._hotkey_work, args=(slot,),
+                                                                   daemon=True).start()
+        for slot in ("tr", "spell"):
+            hk = self.settings.get(self.MAC_HK[slot])
+            if isinstance(hk, dict):
+                self.caps_engine.hotkeys[slot] = hk
         self.after(400, self._start_input)
 
     # ================================================================ UI
@@ -228,14 +232,27 @@ class App(ctk.CTk):
         row.pack(fill="x")
         ctk.CTkLabel(row, text="Напиши фразу в чате игры и нажми", font=(FONT, 12),
                      text_color=MUTED).pack(side="left")
-        self.key_btn = ctk.CTkButton(row, text=hotkey_label(self.settings.get("mac_hotkey") or {"key": 17, "mods": ["ctrl", "alt"]}), width=70, height=30,
+        self.key_btn = ctk.CTkButton(row, text=self._hk_label("tr"), width=70, height=30,
                                      font=(FONT, 13, "bold"), fg_color=CARD_2, hover_color=BORDER,
                                      border_width=1, border_color=GOLD, text_color=GOLD,
-                                     command=self.on_rebind)
+                                     command=lambda: self.on_rebind("tr"))
         self.key_btn.pack(side="left", padx=8)
+        rows = ctk.CTkFrame(mine.body, fg_color="transparent")
+        rows.pack(fill="x", pady=(8, 0))
+        ctk.CTkLabel(rows, text="Исправить ошибки в чате:", font=(FONT, 12), text_color=MUTED).pack(side="left")
+        self.spell_btn = ctk.CTkButton(rows, text=self._hk_label("spell"), width=70, height=30,
+                                       font=(FONT, 13, "bold"), fg_color=CARD_2, hover_color=BORDER,
+                                       border_width=1, border_color=GOLD, text_color=GOLD,
+                                       command=lambda: self.on_rebind("spell"))
+        self.spell_btn.pack(side="left", padx=8)
+        self.spell_sw = ctk.CTkSwitch(mine.body, text="Исправлять ошибки перед переводом", font=(FONT, 12),
+                                      text_color=TEXT, progress_color=GOLD, command=self.on_spell_before)
+        self.spell_sw.pack(anchor="w", pady=(8, 0))
+        if self.settings.get("spell_before_translate", True):
+            self.spell_sw.select()
         row2 = ctk.CTkFrame(mine.body, fg_color="transparent")
         row2.pack(fill="x", pady=(8, 0))
-        ctk.CTkLabel(row2, text="Нажми на клавишу, чтобы поменять её", font=(FONT, 10),
+        ctk.CTkLabel(row2, text="Нажми на клавишу в рамке, чтобы поменять её", font=(FONT, 10),
                      text_color=MUTED).pack(side="left")
         self.send_switch = ctk.CTkSwitch(row2, text="Сразу отправлять", font=(FONT, 12), text_color=TEXT,
                                          progress_color=GOLD, command=self.on_autosend)
@@ -252,6 +269,9 @@ class App(ctk.CTk):
                                   font=(FONT, 13), fg_color=CARD_2, border_color=BORDER, text_color=TEXT)
         self.entry.pack(side="left", fill="x", expand=True)
         self.entry.bind("<Return>", lambda e: self.on_manual())
+        ctk.CTkButton(in_row, text="Ошибки", width=74, height=38, font=(FONT, 13),
+                      fg_color=CARD_2, hover_color=BORDER, border_width=1, border_color=GOLD, text_color=GOLD,
+                      command=self.on_manual_spell).pack(side="left", padx=(8, 0))
         ctk.CTkButton(in_row, text="Перевести", width=100, height=38, font=(FONT, 13, "bold"),
                       fg_color=GOLD, hover_color=GOLD_HOVER, text_color=BG,
                       command=self.on_manual).pack(side="left", padx=(8, 0))
@@ -568,7 +588,7 @@ class App(ctk.CTk):
             if getattr(self, "perm_banner", None):
                 self.perm_banner.destroy()
                 self.perm_banner = None
-            self.set_status(f"Готово. Клавиша {self.key_btn.cget('text')} работает", GREEN)
+            self.set_status(f"Готово. Перевод — {self._hk_label('tr')}, ошибки — {self._hk_label('spell')}", GREEN)
             self.caps_status_set("Работает. Закрытие окна не выключает программу. Выход — ⌘Q.", GREEN)
             return
         if getattr(self, "perm_banner", None):
@@ -618,6 +638,8 @@ class App(ctk.CTk):
                         self.progress.set(val)
                 elif kind == "key":
                     self.key_btn.configure(text=item[1])
+                elif kind == "spellkey":
+                    self.spell_btn.configure(text=item[1])
                 elif kind == "error":
                     messagebox.showerror(APP_NAME, item[1])
                 elif kind == "perm":
@@ -773,22 +795,62 @@ class App(ctk.CTk):
         self.settings["watch_clipboard"] = bool(self.watch_switch.get())
         save_settings(self.settings)
 
-    def on_rebind(self):
+    HOTKEY_SLOTS = {"tr": ("hotkey", "hotkey_label", "f9"), "spell": ("spell_hotkey", "spell_hotkey_label", "f8")}
+
+    MAC_HK = {"tr": "mac_hotkey", "spell": "mac_spell_hotkey"}
+    MAC_HK_DEFAULT = {"tr": {"key": 17, "mods": ["ctrl", "alt"]}, "spell": {"key": 15, "mods": ["ctrl", "alt"]}}
+
+    def _hk_label(self, slot):
+        hk = self.settings.get(self.MAC_HK[slot])
+        return hotkey_label(hk if isinstance(hk, dict) else self.MAC_HK_DEFAULT[slot])
+
+    def on_spell_before(self):
+        self.settings["spell_before_translate"] = bool(self.spell_sw.get())
+        save_settings(self.settings)
+
+    def on_manual_spell(self):
+        text = self.entry.get().strip()
+        if not text:
+            return
+        self.entry.delete(0, "end")
+
+        def work():
+            try:
+                self.set_status("Проверяю ошибки…", BLUE)
+                fixed, n, how = self.engine.spell(text)
+                self._copy(fixed)
+                if n:
+                    self.ui("history", text, fixed, "spell", how)
+                    self.set_status(f"Исправлено ошибок: {n} — скопировано, можно ⌘V", GREEN)
+                else:
+                    self.set_status("Ошибок не нашёл", GREEN)
+            except Exception as e:
+                log("manual spell failed: " + traceback.format_exc())
+                self.set_status(str(e)[:80], RED)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_rebind(self, slot="tr"):
         if self.binding:
             return
         self.binding = True
-        self.key_btn.configure(text="Жми…")
+        btn = self.key_btn if slot == "tr" else self.spell_btn
+        btn.configure(text="Жми…")
         self.set_status("Нажми новое сочетание (лучше с ⌃ или ⌥), Esc — отмена", BLUE)
 
         def done(hk):
             if hk:
-                self.caps_engine.hotkey = hk
-                self.settings["mac_hotkey"] = hk
-                save_settings(self.settings)
+                other = "spell" if slot == "tr" else "tr"
+                if hk == self.caps_engine.hotkeys.get(other):
+                    self.set_status("Это сочетание уже занято другой функцией", ORANGE)
+                else:
+                    self.caps_engine.hotkeys[slot] = hk
+                    self.settings[self.MAC_HK[slot]] = hk
+                    save_settings(self.settings)
             self.binding = False
-            label = hotkey_label(self.caps_engine.hotkey)
-            self.ui("key", label)
-            self.set_status(f"Клавиша {label} работает", GREEN)
+            self.ui("key", self._hk_label("tr"))
+            self.ui("spellkey", self._hk_label("spell"))
+            self.set_status(f"Перевод — {self._hk_label('tr')}, ошибки — {self._hk_label('spell')}", GREEN)
         self.caps_engine.capture_cb = done
 
     def on_install_file(self):
@@ -958,47 +1020,65 @@ class App(ctk.CTk):
     def _setup_hotkey(self):
         pass
 
-    def _on_hotkey(self):
+    def _on_hotkey(self, slot="tr"):
         pass
 
-    def _hotkey_work(self):
+    def _hotkey_work(self, slot="tr"):
         if self.busy:
             return
         self.busy = True
         mi = mac_input
         try:
-            mi.clip_quiet(3)
+            mi.clip_quiet(4)
             mi.wait_mods_released()
             old_clip = self._clip() or ""
-            marker = "\u2063wowtr\u2063"
-            self._copy(marker)
-            mi.cmd(mi.VK_A)
-            time.sleep(0.05)
-            mi.cmd(mi.VK_C)
-            text = marker
-            for _ in range(20):
-                time.sleep(0.03)
-                text = self._clip()
-                if text != marker:
-                    break
-            if text == marker or not (text or "").strip():
-                self._copy(old_clip)
+            text, selection = None, False
+            if slot == "spell":
+                text = mi.copy_selection(0.5)          # сначала — выделенный текст
+                selection = bool(text and text.strip())
+            if not selection:
+                mi.cmd(mi.VK_A)
+                time.sleep(0.05)
+                text = mi.copy_selection()
+            if not (text or "").strip():
                 self.set_status("Не нашёл текст. Открой чат и напиши фразу", ORANGE)
                 return
-            self.set_status("Перевожу…", BLUE)
-            result, how = self.engine.translate(text, ("ru", "en"))
-            mi.clip_quiet(3)
-            self._copy(result)
-            mi.cmd(mi.VK_A)
-            time.sleep(0.03)
+            if slot == "spell":
+                self.set_status("Проверяю ошибки…", BLUE)
+                result, n, how = self.engine.spell(text)
+                if not n:
+                    self._copy(old_clip)
+                    self.set_status("Ошибок не нашёл", GREEN)
+                    return
+            else:
+                src_text = text
+                if self.settings.get("spell_before_translate", True) and core.CYR.search(text):
+                    try:
+                        src_text, n, _ = self.engine.spell(text)
+                    except Exception:
+                        src_text = text
+                self.set_status("Перевожу…", BLUE)
+                result, how = self.engine.translate(src_text, ("ru", "en"))
+            if selection and text != text.strip():
+                lead = text[:len(text) - len(text.lstrip())]
+                trail = text[len(text.rstrip()):]
+                result = lead + result + trail
+            mi.clip_quiet(4)
+            self._copy(result)   # результат остаётся в буфере обмена
+            if not selection:
+                mi.cmd(mi.VK_A)
+                time.sleep(0.03)
             mi.cmd(mi.VK_V)
             time.sleep(0.05)
-            if self.settings.get("auto_send"):
+            if self.settings.get("auto_send") and slot != "spell":
                 mi.key(mi.VK_RETURN)
-            if result != text.strip():
-                self.ui("history", text.strip(), result, ("ru", "en"), how)
-            self.set_status(f"Вставлено в чат ({how})", GREEN)
-            self._warn_length(result)
+            if result.strip() != text.strip():
+                self.ui("history", text.strip(), result.strip(), "spell" if slot == "spell" else ("ru", "en"), how)
+            if slot == "spell":
+                self.set_status(f"Исправлено ошибок: {n} ({how})", GREEN)
+            else:
+                self.set_status(f"Вставлено в чат ({how})", GREEN)
+                self._warn_length(result)
         except Exception as e:
             log("hotkey failed: " + traceback.format_exc())
             self.set_status(str(e)[:80], RED)

@@ -361,8 +361,9 @@ class MacInput:
         self.q = queue.Queue()
         self.tap = None
         self.running = False
-        self.hotkey = {"key": 17, "mods": ["ctrl", "alt"]}   # ⌃⌥T
-        self.on_hotkey = None
+        # горячие клавиши: перевод ⌃⌥T, исправление ошибок ⌃⌥R
+        self.hotkeys = {"tr": {"key": 17, "mods": ["ctrl", "alt"]}, "spell": {"key": 15, "mods": ["ctrl", "alt"]}}
+        self.on_hotkey = None             # функция(slot)
         self.capture_cb = None            # перехват следующего сочетания для смены горячей клавиши
 
         self.buf, self.buf_app = [], None  # [(keycode, flags)]
@@ -455,22 +456,24 @@ class MacInput:
                         cb, self.capture_cb = self.capture_cb, None
                         self.q.put(("capture", cb, None))
                         return None
-                    if self._is_hotkey(code, flags):
+                    slot = self._hotkey_slot(code, flags)
+                    if slot:
                         if not CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventAutorepeat):
-                            self.q.put(("hotkey",))
+                            self.q.put(("hotkey", slot))
                         return None
                     self.q.put(("key", code, flags))
         except Exception:
             pass
         return event
 
-    def _is_hotkey(self, code, flags):
-        hk = self.hotkey
-        if not hk or code != hk.get("key") or self.on_hotkey is None:
-            return False
-        want = set(hk.get("mods", []))
+    def _hotkey_slot(self, code, flags):
+        if self.on_hotkey is None:
+            return None
         have = {n for n, bit, _ in MOD_BITS if flags & bit}
-        return want == have
+        for slot, hk in self.hotkeys.items():
+            if hk and code == hk.get("key") and set(hk.get("mods", [])) == have:
+                return slot
+        return None
 
     # ---------- обработка
     def _worker(self):
@@ -490,7 +493,7 @@ class MacInput:
                 elif kind == "hotkey":
                     self.reset()
                     if self.on_hotkey:
-                        self.on_hotkey()
+                        self.on_hotkey(ev[1])
                 elif kind == "capture":
                     ev[1](ev[2])
             except Exception:

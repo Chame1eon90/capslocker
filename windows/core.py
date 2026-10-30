@@ -54,6 +54,7 @@ DEFAULT_SETTINGS = {
     "keep_on_top": True,
     "offline_engine": "fast",
     "unload_minutes": 10,
+    "spell_before_translate": True,
     "online_service": "google",
     "online_fallback": True,
 }
@@ -729,9 +730,60 @@ class HyMTModel:
         return out.strip('"').strip()
 
 
+# ---------------------------------------------------------------- проверка ошибок
+
+class SpellChecker:
+    """Исправление опечаток: Яндекс.Спеллер (основной), LanguageTool (запасной). Нужен интернет."""
+
+    def _yandex(self, text, timeout):
+        body = urllib.parse.urlencode({"text": text, "lang": "ru,en", "options": 2 | 4 | 512}).encode("utf-8")
+        raw = _http("https://speller.yandex.net/services/spellservice.json/checkText", data=body,
+                    timeout=timeout, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        fixes = [(e["pos"], e["len"], e["s"][0]) for e in json.loads(raw) if e.get("s")]
+        return fixes
+
+    def _languagetool(self, text, timeout):
+        lang = "ru-RU" if CYR.search(text) else "en-US"
+        body = urllib.parse.urlencode({"text": text, "language": lang, "level": "default"}).encode("utf-8")
+        raw = _http("https://api.languagetool.org/v2/check", data=body, timeout=timeout + 2,
+                    headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"})
+        fixes = []
+        for m in json.loads(raw).get("matches", []):
+            kind = (m.get("rule", {}).get("issueType") or "").lower()
+            reps = m.get("replacements") or []
+            if reps and kind in ("misspelling", "typographical", "grammar"):
+                fixes.append((m["offset"], m["length"], reps[0]["value"]))
+        return fixes
+
+    @staticmethod
+    def _apply(text, fixes):
+        out, n, last = text, 0, None
+        for pos, length, rep in sorted(fixes, key=lambda f: f[0], reverse=True):
+            if last is not None and pos + length > last:
+                continue  # пересекающиеся правки пропускаем
+            if out[pos:pos + length] != rep:
+                out = out[:pos] + rep + out[pos + length:]
+                n += 1
+            last = pos
+        return out, n
+
+    def check(self, text, timeout=4):
+        """Возвращает (исправленный текст, сколько исправлений, сервис)."""
+        errors = []
+        for name, fn in (("Яндекс.Спеллер", self._yandex), ("LanguageTool", self._languagetool)):
+            try:
+                fixed, n = self._apply(text, fn(text, timeout))
+                return fixed, n, name
+            except Exception as e:
+                log(f"spell {name} failed: {e!r}")
+                errors.append(f"{name}: {e}")
+        raise RuntimeError("Проверка ошибок недоступна (" + "; ".join(errors)[:160] + ")")
+
+
 class Engine:
     def __init__(self):
         self.online = OnlineTranslator()
+        self.speller = SpellChecker()
         self.offline = {
             ("ru", "en"): OfflineModel("ru", "en"),
             ("en", "ru"): OfflineModel("en", "ru"),
@@ -789,6 +841,18 @@ class Engine:
                 raise RuntimeError("Нет интернета, а офлайн-модель не скачана.")
             result, how = self._offline(text, src, tgt)
             return result, how + " (нет сети)"
+
+    def spell(self, text):
+        """Исправить опечатки. Команды чата вроде «/g » и «/w Ник » не трогаем."""
+        text = text.strip()
+        if not text:
+            return text, 0, ""
+        prefix, body = "", text
+        m = WHISPER_CMD.match(text) or SLASH_CMD.match(text)
+        if m:
+            prefix, body = m.group(1), m.group(2)
+        fixed, n, how = self.speller.check(body)
+        return prefix + fixed, n, how
 
     def translate(self, text, direction=None):
         """direction: ('ru','en'), ('en','ru') или None = определить само."""
