@@ -400,6 +400,20 @@ class App(ctk.CTk):
         tp.pack(side="right")
         tp.set(next((k for k, v in self.toast_pos_map.items() if v == self.settings.get("toast_pos", "br")),
                     "Снизу справа"))
+        ctk.CTkLabel(hist.body, text="Плашка — только в программах (через запятую, например: Wow, Overwatch):",
+                     font=(FONT, 10), text_color=MUTED).pack(anchor="w", pady=(0, 2))
+        tr3 = ctk.CTkFrame(hist.body, fg_color="transparent")
+        tr3.pack(fill="x", pady=(0, 6))
+        self.toast_ex = ctk.CTkEntry(tr3, height=28, font=(FONT, 12), fg_color=CARD_2, border_color=BORDER,
+                                     text_color=TEXT, placeholder_text="пусто — во всех программах")
+        self.toast_ex.pack(side="left", fill="x", expand=True)
+        if self.settings.get("toast_only"):
+            self.toast_ex.insert(0, self.settings["toast_only"])
+        self.toast_ex.bind("<FocusOut>", lambda e: self.on_toast_apps())
+        self.toast_ex.bind("<Return>", lambda e: self.on_toast_apps())
+        ctk.CTkButton(tr3, text="Выбрать…", width=84, height=28, font=(FONT, 12), fg_color="transparent",
+                      hover_color=BORDER, border_width=1, border_color=BORDER, text_color=GOLD,
+                      command=self.on_pick_toast_app).pack(side="left", padx=(6, 0))
         ctk.CTkButton(top, text="Очистить", width=70, height=24, font=(FONT, 11), fg_color="transparent",
                       hover_color=BORDER, text_color=MUTED, command=self.clear_history).pack(side="right")
         # обычный список: вся вкладка и так прокручивается
@@ -946,6 +960,43 @@ class App(ctk.CTk):
         self.settings["punct_only"] = self.punct_ex.get().strip()
         save_settings(self.settings)
 
+    def _pick_app_into(self, entry, save_cb, what):
+        from tkinter import filedialog
+        if sys.platform == "win32":
+            path = filedialog.askopenfilename(title="Выбери программу (например, Wow.exe)",
+                                              filetypes=[("Программы", "*.exe"), ("Все файлы", "*.*")])
+        else:
+            path = filedialog.askdirectory(title="Выбери программу в «Программах»", initialdir="/Applications")
+        if not path:
+            return
+        name = os.path.basename(path.rstrip("/\\"))
+        name = name[:-4] if name.lower().endswith((".exe", ".app")) else name
+        cur = [x.strip() for x in entry.get().replace(";", ",").split(",") if x.strip()]
+        if name.lower() not in [c.lower() for c in cur]:
+            cur.append(name)
+        entry.delete(0, "end")
+        entry.insert(0, ", ".join(cur))
+        save_cb()
+        self.set_status(f"{what}: {', '.join(cur)}", GREEN)
+
+    def _front_in_list(self, key, label):
+        """Активная программа есть в списке настроек key? Пустой список — значит, везде."""
+        only = [x.strip().lower() for x in self.settings.get(key, "").replace(";", ",").split(",") if x.strip()]
+        if not only:
+            return True
+        raw = self._front_app_name()
+        name = raw.lower().replace(".exe", "").replace(".app", "")
+        ok = any(e.replace(".exe", "").replace(".app", "") in name for e in only if e) if name else False
+        log(f"{label}: активная программа «{raw or 'не определена'}» → {'да' if ok else 'нет'}")
+        return ok
+
+    def on_pick_toast_app(self):
+        self._pick_app_into(self.toast_ex, self.on_toast_apps, "Плашка будет появляться в")
+
+    def on_toast_apps(self):
+        self.settings["toast_only"] = self.toast_ex.get().strip()
+        save_settings(self.settings)
+
     def on_pick_punct_app(self):
         from tkinter import filedialog
         if sys.platform == "win32":
@@ -1036,39 +1087,47 @@ class App(ctk.CTk):
         self._show_toast("This is where translations will appear", "Здесь будут появляться переводы")
 
     def _show_toast(self, original, translated):
-        """Плашка с переводом поверх всех окон на несколько секунд. Клик — закрыть."""
+        """Плашка с переводом поверх всех окон на несколько секунд. Клик — закрыть.
+        Обычное окно tkinter (без пересчёта масштаба customtkinter): размеры и место — в
+        настоящих пикселях экрана, поэтому при масштабе Windows 125–150% ничего не съезжает."""
+        import tkinter as tk
         try:
             old = getattr(self, "_toast", None)
             if old is not None and old.winfo_exists():
                 old.destroy()
-            t = ctk.CTkToplevel(self)
+            t = tk.Toplevel(self)
             self._toast = t
+            t.withdraw()                      # сначала строим невидимой, потом показываем на месте
             t.overrideredirect(True)
             t.attributes("-topmost", True)
             try:
                 t.attributes("-alpha", 0.95)
             except Exception:
                 pass
-            t.configure(fg_color=GOLD)
-            box = ctk.CTkFrame(t, fg_color=CARD, corner_radius=0)
+            t.configure(bg=GOLD)
+            box = tk.Frame(t, bg=CARD)
             box.pack(fill="both", expand=True, padx=2, pady=2)
-            ctk.CTkLabel(box, text=translated, font=(FONT, 15, "bold"), text_color=TEXT, wraplength=420,
-                         justify="left", anchor="w").pack(fill="x", padx=14, pady=(10, 2))
-            ctk.CTkLabel(box, text=original, font=(FONT, 11), text_color=MUTED, wraplength=420,
-                         justify="left", anchor="w").pack(fill="x", padx=14, pady=(0, 10))
+            wrap = int(t.winfo_fpixels("1i") * 4.6)   # ~4,6 дюйма — одинаково при любом масштабе
+            tk.Label(box, text=translated, font=(FONT, 13, "bold"), fg=TEXT, bg=CARD, wraplength=wrap,
+                     justify="left", anchor="w").pack(fill="x", padx=12, pady=(8, 1))
+            tk.Label(box, text=original, font=(FONT, 9), fg=MUTED, bg=CARD, wraplength=wrap,
+                     justify="left", anchor="w").pack(fill="x", padx=12, pady=(0, 8))
             for wdg in (t, box) + tuple(box.winfo_children()):
                 wdg.bind("<Button-1>", lambda e: t.destroy())
             t.update_idletasks()
             w, h = t.winfo_reqwidth(), t.winfo_reqheight()
             sw, sh = t.winfo_screenwidth(), t.winfo_screenheight()
+            margin = int(t.winfo_fpixels("0.25i"))
+            bottom = int(t.winfo_fpixels("0.8i"))   # над панелью задач / Dock
             pos = self.settings.get("toast_pos", "br")
-            x = sw - w - 24 if pos in ("br", "tr") else (sw - w) // 2
-            y = 40 if pos in ("tr", "tc") else sh - h - 90
-            t.geometry(f"+{x}+{y}")
+            x = sw - w - margin if pos in ("br", "tr") else (sw - w) // 2
+            y = margin + 10 if pos in ("tr", "tc") else sh - h - bottom
+            tk.Wm.geometry(t, f"{w}x{h}+{max(0, x)}+{max(0, y)}")
+            t.deiconify()
+            t.lift()
             t.after(min(14000, 4500 + 70 * len(translated)), lambda: t.winfo_exists() and t.destroy())
         except Exception:
             log("toast: " + traceback.format_exc())
-
     def on_manual_spell(self):
         text = self.entry.get().strip()
         if not text:
@@ -1289,11 +1348,12 @@ class App(ctk.CTk):
                 continue
             if detect_direction(text) != ("en", "ru"):
                 continue
+            toast_here = self.settings.get("toast", True) and self._front_in_list("toast_only", "плашка")
             try:
                 self.set_status("Перевожу входящее…", BLUE)
                 result, how = self.engine.translate(text, ("en", "ru"))
                 self.ui("history", text.strip(), result, ("en", "ru"), how)
-                if self.settings.get("toast", True):
+                if toast_here:
                     self.ui("toast", text.strip(), result)
                 self.set_status(f"Входящее переведено ({how})", GREEN)
             except Exception as e:
