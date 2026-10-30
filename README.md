@@ -2,8 +2,12 @@
 
 Перевод чата (русский ⇄ английский) и исправление раскладки одним нажатием CapsLock.
 
-- `windows/` — исходники версии для Windows.
-- `mac/` — версия для macOS. Собирается автоматически: вкладка **Actions**, готовые файлы лежат в **Releases**.
+- `windows/` — версия для Windows.
+- `mac/` — версия для macOS.
+
+Обе собираются автоматически после каждого изменения (вкладка **Actions**).
+Готовые файлы — в **Releases**: `Capslocker-Windows.zip`, `Capslocker-macOS-Apple-M.zip`,
+`Capslocker-macOS-Intel.zip`.
 
 ## Установка на Mac
 

@@ -1,9 +1,9 @@
-name: Сборка для macOS
+name: Сборка (Windows и macOS)
 
 on:
   push:
     branches: [main]
-    paths: ["mac/**", ".github/workflows/build-mac.yml"]
+    paths: ["mac/**", "windows/**", ".github/workflows/build.yml"]
   workflow_dispatch: {}
 
 permissions:
@@ -71,8 +71,53 @@ jobs:
           name: Capslocker-macOS-${{ matrix.label }}
           path: Capslocker-macOS-${{ matrix.label }}.zip
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Библиотеки
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller customtkinter keyboard pyperclip pystray pillow ctranslate2 sentencepiece
+      - name: Сборка Capslocker.exe
+        working-directory: windows
+        shell: pwsh
+        run: |
+          Expand-Archive llama_runtime.zip -DestinationPath llama
+          python -m PyInstaller --noconfirm --onefile --windowed --name Capslocker --icon icon.ico `
+            --add-data "icon.ico;." --add-data "tray_on.png;." --add-data "tray_off.png;." --add-data "llama;llama" `
+            --collect-all customtkinter --collect-all ctranslate2 --collect-binaries sentencepiece `
+            --hidden-import sentencepiece --hidden-import pyperclip --hidden-import keyboard `
+            --hidden-import pystray._win32 --exclude-module matplotlib --exclude-module ctranslate2.converters app.py
+      - name: Пробный запуск (должна стартовать и не упасть сразу)
+        working-directory: windows
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\Capslocker.exe -PassThru
+          Start-Sleep -Seconds 25
+          if ($p.HasExited) { Write-Host "Упала при запуске"; Get-Content "$env:LOCALAPPDATA\Capslocker\log.txt" -ErrorAction SilentlyContinue; exit 1 }
+          Write-Host "Запустилась и работает"
+          Get-Process Capslocker -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force
+      - name: Архив
+        working-directory: windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pkg\Капслокер | Out-Null
+          Copy-Item dist\Capslocker.exe pkg\Капслокер\
+          Copy-Item "Инструкция.txt" pkg\Капслокер\
+          Copy-Item icon.png "pkg\Капслокер\Капслокер icon.png"
+          Compress-Archive -Path pkg\Капслокер -DestinationPath ..\Capslocker-Windows.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Capslocker-Windows
+          path: Capslocker-Windows.zip
+
   release:
-    needs: build
+    needs: [build, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -83,7 +128,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="mac-build-${{ github.run_number }}"
+          TAG="build-${{ github.run_number }}"
           gh release create "$TAG" out/*.zip --repo "${{ github.repository }}" \
-            --title "Капслокер для macOS (сборка ${{ github.run_number }})" \
-            --notes "Apple-M — для Mac на чипах M1–M4. Intel — для старых Mac на Intel. Инструкция — в README."
+            --title "Капслокер (сборка ${{ github.run_number }})" \
+            --notes "Windows — Capslocker-Windows.zip. Mac: Apple-M — для чипов M1–M4, Intel — для старых Mac на Intel. Инструкция — в README."
