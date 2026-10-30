@@ -968,6 +968,9 @@ class OfflineSpeller:
                 self._load_sage()
                 out = self._sage(text)
                 fixed, n = self._merge(text, out, punctuation)
+                # точку в конце фразы не добавляем — в чатах её обычно не ставят
+                if fixed.endswith(".") and not text.rstrip().endswith((".", "!", "?", "…")):
+                    fixed = fixed[:-1]
                 # английские слова внутри русской фразы — словарём
                 if re.search(r"[A-Za-z]", fixed):
                     fixed, n2 = self._dict_fix(fixed)
@@ -1054,8 +1057,19 @@ class Engine:
         if self.mode == "offline":
             fixed, n, how = self.offline_speller.check(body, punctuation)
         else:
+            # русскую пунктуацию лучше всего правит SAGE (если скачана): LanguageTool
+            # почти не знает русских правил про запятые (обращения, вводные слова)
+            sage_punct = punctuation and bool(CYR.search(body)) and self.offline_speller.sage_installed()
             try:
-                fixed, n, how = self.speller.check(body, punctuation=punctuation, timeout=3)
+                fixed, n, how = self.speller.check(body, punctuation=punctuation and not sage_punct, timeout=3)
+                if sage_punct:
+                    try:
+                        fixed, n2, _ = self.offline_speller.check(fixed, True)
+                        n += n2
+                        how += " + SAGE"
+                        self.last_offline_use = time.time()
+                    except Exception as e2:
+                        log(f"sage punct failed: {e2!r}")
             except Exception as e:
                 if self.mode == "online":
                     raise
