@@ -22,6 +22,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Python 3.12 с python.org (с Tk для окна)
         run: |
@@ -103,14 +105,34 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="build-${{ github.run_number }}"
+          # «Что нового»: из .github/release-notes.json, если там есть эта сборка, иначе — список изменений с прошлой сборки
+          PYBIN=$(command -v python3 || command -v python)
+          "$PYBIN" - "$TAG" > notes.md <<'PY'
+          import json, subprocess, sys
+          tag = sys.argv[1]
+          try:
+              print(json.load(open(".github/release-notes.json", encoding="utf-8"))[tag]); sys.exit()
+          except (KeyError, OSError, ValueError):
+              pass
+          tags = subprocess.run(["git", "tag", "-l", "build-*", "--sort=-v:refname"], capture_output=True, text=True).stdout.split()
+          prev = next((t for t in tags if t != tag), None)
+          rng = [f"{prev}..HEAD"] if prev else ["-1"]
+          log = subprocess.run(["git", "log", "--format=%s"] + rng, capture_output=True, text=True, encoding="utf-8").stdout
+          items = [l for l in log.splitlines() if l.strip() and not l.startswith(("CI:", "Запуск сборки"))]
+          print("## Что нового\n" + "\n".join("- " + l for l in reversed(items)) + "\n")
+          print("Windows — Capslocker-Windows.zip. Mac: Apple-M — чипы M1–M4, Intel — старые Mac. Файлы появляются по мере готовности.")
+          PY
+          cat notes.md
           gh release create "$TAG" --repo "${{ github.repository }}" --title "Капслокер (сборка ${{ github.run_number }})" \
-            --notes "Windows — Capslocker-Windows.zip. Mac: Apple-M — чипы M1–M4, Intel — старые Mac. Файлы появляются по мере готовности." || true
+            --notes-file notes.md || true
           gh release upload "$TAG" "Capslocker-macOS-${{ matrix.label }}.zip" --repo "${{ github.repository }}" --clobber
 
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -221,6 +243,24 @@ jobs:
         shell: bash
         run: |
           TAG="build-${{ github.run_number }}"
+          # «Что нового»: из .github/release-notes.json, если там есть эта сборка, иначе — список изменений с прошлой сборки
+          PYBIN=$(command -v python3 || command -v python)
+          "$PYBIN" - "$TAG" > notes.md <<'PY'
+          import json, subprocess, sys
+          tag = sys.argv[1]
+          try:
+              print(json.load(open(".github/release-notes.json", encoding="utf-8"))[tag]); sys.exit()
+          except (KeyError, OSError, ValueError):
+              pass
+          tags = subprocess.run(["git", "tag", "-l", "build-*", "--sort=-v:refname"], capture_output=True, text=True).stdout.split()
+          prev = next((t for t in tags if t != tag), None)
+          rng = [f"{prev}..HEAD"] if prev else ["-1"]
+          log = subprocess.run(["git", "log", "--format=%s"] + rng, capture_output=True, text=True, encoding="utf-8").stdout
+          items = [l for l in log.splitlines() if l.strip() and not l.startswith(("CI:", "Запуск сборки"))]
+          print("## Что нового\n" + "\n".join("- " + l for l in reversed(items)) + "\n")
+          print("Windows — Capslocker-Windows.zip. Mac: Apple-M — чипы M1–M4, Intel — старые Mac. Файлы появляются по мере готовности.")
+          PY
+          cat notes.md
           gh release create "$TAG" --repo "${{ github.repository }}" --title "Капслокер (сборка ${{ github.run_number }})" \
-            --notes "Windows — Capslocker-Windows.zip. Mac: Apple-M — чипы M1–M4, Intel — старые Mac. Файлы появляются по мере готовности." || true
+            --notes-file notes.md || true
           gh release upload "$TAG" Capslocker-Windows.zip --repo "${{ github.repository }}" --clobber

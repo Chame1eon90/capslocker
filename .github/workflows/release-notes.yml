@@ -1,0 +1,28 @@
+name: Описания релизов
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/release-notes.json", ".github/workflows/release-notes.yml"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Записать «Что нового» в каждый релиз
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+          notes = json.load(open(".github/release-notes.json", encoding="utf-8"))
+          for tag, body in notes.items():
+              r = subprocess.run(["gh", "release", "edit", tag, "--repo", "${{ github.repository }}", "--notes", body],
+                                 capture_output=True, text=True)
+              print(tag, "ok" if r.returncode == 0 else r.stderr.strip())
+          PY
