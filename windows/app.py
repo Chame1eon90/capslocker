@@ -1,0 +1,1160 @@
+# -*- coding: utf-8 -*-
+"""WoW Переводчик — графический интерфейс."""
+import ctypes
+import json
+import os
+import queue
+import sys
+import threading
+import time
+import traceback
+
+import customtkinter as ctk
+from tkinter import messagebox
+
+import core
+from engine import Engine as CapsEngine
+from core import Engine, detect_direction, load_settings, save_settings, log, WOW_CHAT_LIMIT
+
+APP_NAME = "Капслокер"
+
+# ---- палитра
+BG = "#14161c"
+CARD = "#1d2029"
+CARD_2 = "#252935"
+BORDER = "#2e3342"
+TEXT = "#e9e6dc"
+MUTED = "#8b8f9c"
+GOLD = "#e0b545"
+GOLD_HOVER = "#f0c75a"
+GREEN = "#4cc38a"
+RED = "#e5605a"
+BLUE = "#5aa9e6"
+ORANGE = "#e69a4c"
+
+FONT = "Segoe UI"
+
+
+def resource_path(name):
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+def nice_key(hk):
+    return "+".join(p.capitalize() if len(p) > 1 else p.upper() for p in str(hk).split("+"))
+
+
+# Скан-коды клавиш: работают при любой раскладке (русской тоже)
+SC_CTRL, SC_A, SC_C, SC_V, SC_ENTER = 29, 30, 46, 47, 28
+MODIFIER_NAMES = {"ctrl", "left ctrl", "right ctrl", "alt", "left alt", "right alt", "alt gr",
+                  "shift", "left shift", "right shift", "windows", "left windows", "right windows"}
+# Windows keycode -> действие для поля ввода (не зависит от раскладки)
+EDIT_KEYCODES = {86: "<<Paste>>", 67: "<<Copy>>", 88: "<<Cut>>", 65: "select_all"}
+
+
+class Card(ctk.CTkFrame):
+    def __init__(self, master, title, badge=None, **kw):
+        super().__init__(master, fg_color=CARD, corner_radius=14, border_width=1, border_color=BORDER, **kw)
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.pack(fill="x", padx=16, pady=(14, 6))
+        ctk.CTkLabel(head, text=title, font=(FONT, 15, "bold"), text_color=TEXT).pack(side="left")
+        if badge:
+            ctk.CTkLabel(head, text=f" {badge} ", font=(FONT, 11, "bold"), text_color=BG,
+                         fg_color=GOLD, corner_radius=6).pack(side="left", padx=8)
+        self.body = ctk.CTkFrame(self, fg_color="transparent")
+        self.body.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+
+
+class HistoryItem(ctk.CTkFrame):
+    def __init__(self, master, original, translated, direction, how, on_copy):
+        super().__init__(master, fg_color=CARD_2, corner_radius=10)
+        arrow = "RU → EN" if direction == ("ru", "en") else "EN → RU"
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=10, pady=(8, 0))
+        ctk.CTkLabel(top, text=f"{arrow}  ·  {how}  ·  {time.strftime('%H:%M')}",
+                     font=(FONT, 10), text_color=MUTED).pack(side="left")
+        ctk.CTkButton(top, text="Копировать", width=86, height=22, font=(FONT, 11),
+                      fg_color="transparent", hover_color=BORDER, text_color=GOLD,
+                      command=lambda: on_copy(translated)).pack(side="right")
+        ctk.CTkLabel(self, text=original, font=(FONT, 12), text_color=MUTED, wraplength=430,
+                     justify="left", anchor="w").pack(fill="x", padx=10, pady=(2, 0))
+        ctk.CTkLabel(self, text=translated, font=(FONT, 14), text_color=TEXT, wraplength=430,
+                     justify="left", anchor="w").pack(fill="x", padx=10, pady=(0, 9))
+
+
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        ctk.set_appearance_mode("dark")
+        self.settings = load_settings()
+        self.engine = Engine()
+        self.engine.mode = self.settings["mode"]
+        self.engine.offline_engine = self.settings.get("offline_engine", "fast")
+        if self.settings.get("online_service") not in ("google", "microsoft", "yandex", "mymemory"):
+            self.settings["online_service"] = "google"
+        self.settings.pop("deepl_key", None)
+        self.engine.online.preferred = self.settings["online_service"]
+        self.engine.online.fallback = bool(self.settings.get("online_fallback", True))
+        caps_defaults = {"enabled": True, "hold_ms": 450, "selection": True, "exclude": "", "scope": "phrase"}
+        if "caps" not in self.settings:
+            try:  # перенос настроек из отдельного CapsFix
+                with open(os.path.join(core.OLD_CAPS_DIR, "settings.json"), encoding="utf-8") as f:
+                    old = json.load(f)
+                caps_defaults.update({k: old[k] for k in caps_defaults if k in old})
+            except Exception:
+                pass
+            self.settings["caps"] = caps_defaults
+        else:
+            for k, v in caps_defaults.items():
+                self.settings["caps"].setdefault(k, v)
+        self.caps_settings = self.settings["caps"]
+        self.settings.setdefault("autostart", False)
+        self.settings.setdefault("first_run", True)
+        self.settings.setdefault("tab", "tr")
+        self.tray = None
+        self.ui_queue = queue.Queue()
+        self.busy = False
+        self.downloading = False
+        self.binding = False
+        self.kb = None
+        self.hotkey_handle = None
+        self.own_clip = set()
+        self.last_clip = None
+        self.history_items = []
+
+        self.title(APP_NAME)
+        self._fit_geometry(540, 940)
+        self.configure(fg_color=BG)
+        try:
+            self.iconbitmap(resource_path("icon.ico"))
+        except Exception:
+            pass
+        self.attributes("-topmost", self.settings["keep_on_top"])
+        self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+
+        self._build()
+        self.after(100, self._poll_queue)
+        self._setup_hotkey()
+        self.refresh_models()
+        threading.Thread(target=self._warm_up, daemon=True).start()
+        threading.Thread(target=self._clipboard_watcher, daemon=True).start()
+        threading.Thread(target=self._idle_watcher, daemon=True).start()
+        self.caps_engine = CapsEngine(self.caps_settings, on_event=lambda k, t: self.ui("capsev", k, t))
+        self.caps_engine.start()
+        self._start_tray()
+
+    # ================================================================ UI
+    def _build(self):
+        # ---- шапка
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=18, pady=(16, 8))
+        left = ctk.CTkFrame(header, fg_color="transparent")
+        left.pack(side="left")
+        ctk.CTkLabel(left, text="Капслокер", font=(FONT, 22, "bold"), text_color=GOLD).pack(anchor="w")
+        ctk.CTkLabel(left, text="Перевод и раскладка · Русский ⇄ English", font=(FONT, 12),
+                     text_color=MUTED).pack(anchor="w")
+        self.pin_switch = ctk.CTkSwitch(header, text="Поверх окон", font=(FONT, 12), text_color=MUTED,
+                                        progress_color=GOLD, command=self.on_topmost)
+        self.pin_switch.pack(side="right")
+        if self.settings["keep_on_top"]:
+            self.pin_switch.select()
+
+        # ---- вкладки
+        self.tab_map = {"Перевод": "tr", "Раскладка": "caps"}
+        self.tab_seg = ctk.CTkSegmentedButton(
+            self, values=list(self.tab_map), command=self.on_tab, font=(FONT, 14, "bold"), height=38,
+            fg_color=CARD, selected_color=GOLD, selected_hover_color=GOLD_HOVER,
+            unselected_color=CARD, unselected_hover_color=CARD_2, text_color=TEXT)
+        self.tab_seg.pack(fill="x", padx=18, pady=(0, 8))
+        self.tab_tr = ctk.CTkScrollableFrame(self, fg_color="transparent", scrollbar_button_color=BORDER)
+        # прокрутка: на ноутбуках с масштабом 125–150% окно может не влезть по высоте
+        self.tab_caps = ctk.CTkScrollableFrame(self, fg_color="transparent", scrollbar_button_color=BORDER)
+        self._build_caps(self.tab_caps)
+
+        # ---- режим
+        mode_row = ctk.CTkFrame(self.tab_tr, fg_color="transparent")
+        mode_row.pack(fill="x", padx=18, pady=(4, 10))
+        self.mode_map = {"Авто": "auto", "Онлайн": "online", "Офлайн": "offline"}
+        rev = {v: k for k, v in self.mode_map.items()}
+        self.mode_seg = ctk.CTkSegmentedButton(
+            mode_row, values=list(self.mode_map), command=self.on_mode, font=(FONT, 13, "bold"), height=34,
+            fg_color=CARD, selected_color=GOLD, selected_hover_color=GOLD_HOVER,
+            unselected_color=CARD, unselected_hover_color=CARD_2, text_color=TEXT)
+        self.mode_seg.pack(fill="x")
+        self.mode_seg.set(rev.get(self.settings["mode"], "Авто"))
+        self.mode_hint = ctk.CTkLabel(mode_row, text="", font=(FONT, 11), text_color=MUTED)
+        self.mode_hint.pack(anchor="w", pady=(4, 0))
+        self._update_mode_hint()
+
+        srv = ctk.CTkFrame(mode_row, fg_color="transparent")
+        srv.pack(fill="x", pady=(4, 0))
+        ctk.CTkLabel(srv, text="Онлайн через", font=(FONT, 12), text_color=TEXT).pack(side="left")
+        self.service_names = {"google": "Google", "microsoft": "Microsoft (Bing)", "yandex": "Яндекс",
+                              "mymemory": "MyMemory"}
+        self.service_menu = ctk.CTkOptionMenu(
+            srv, values=list(self.service_names.values()), command=self.on_service, width=170, height=28,
+            font=(FONT, 12), dropdown_font=(FONT, 12), fg_color=CARD_2, button_color=CARD_2,
+            button_hover_color=BORDER, dropdown_fg_color=CARD, dropdown_hover_color=CARD_2, text_color=TEXT)
+        self.service_menu.pack(side="left", padx=8)
+        self.service_menu.set(self.service_names.get(self.engine.online.preferred, "Google"))
+        self.test_btn = ctk.CTkButton(srv, text="Проверить", width=86, height=28, font=(FONT, 12),
+                                      fg_color="transparent", hover_color=BORDER, border_width=1,
+                                      border_color=BORDER, text_color=GOLD, command=self.on_test_services)
+        self.test_btn.pack(side="left")
+        self.fallback_switch = ctk.CTkSwitch(srv, text="Запасные", font=(FONT, 12), text_color=MUTED,
+                                             progress_color=GOLD, width=40, command=self.on_fallback)
+        self.fallback_switch.pack(side="right")
+        if self.engine.online.fallback:
+            self.fallback_switch.select()
+
+        # ---- мои сообщения
+        mine = Card(self.tab_tr, "Мои сообщения", "RU → EN")
+        mine.pack(fill="x", padx=18, pady=6)
+        row = ctk.CTkFrame(mine.body, fg_color="transparent")
+        row.pack(fill="x")
+        ctk.CTkLabel(row, text="Напиши фразу в чате игры и нажми", font=(FONT, 12),
+                     text_color=MUTED).pack(side="left")
+        self.key_btn = ctk.CTkButton(row, text=self.settings.get("hotkey_label") or nice_key(self.settings["hotkey"]), width=70, height=30,
+                                     font=(FONT, 13, "bold"), fg_color=CARD_2, hover_color=BORDER,
+                                     border_width=1, border_color=GOLD, text_color=GOLD,
+                                     command=self.on_rebind)
+        self.key_btn.pack(side="left", padx=8)
+        row2 = ctk.CTkFrame(mine.body, fg_color="transparent")
+        row2.pack(fill="x", pady=(8, 0))
+        ctk.CTkLabel(row2, text="Нажми на клавишу, чтобы поменять её", font=(FONT, 10),
+                     text_color=MUTED).pack(side="left")
+        self.send_switch = ctk.CTkSwitch(row2, text="Сразу отправлять", font=(FONT, 12), text_color=TEXT,
+                                         progress_color=GOLD, command=self.on_autosend)
+        self.send_switch.pack(side="right")
+        if self.settings["auto_send"]:
+            self.send_switch.select()
+
+        # ---- ручной перевод
+        manual = Card(self.tab_tr, "Быстрый перевод", "RU ⇄ EN")
+        manual.pack(fill="x", padx=18, pady=6)
+        in_row = ctk.CTkFrame(manual.body, fg_color="transparent")
+        in_row.pack(fill="x")
+        self.entry = ctk.CTkEntry(in_row, placeholder_text="Пиши на русском или английском…", height=38,
+                                  font=(FONT, 13), fg_color=CARD_2, border_color=BORDER, text_color=TEXT)
+        self.entry.pack(side="left", fill="x", expand=True)
+        self.entry.bind("<Return>", lambda e: self.on_manual())
+        self.entry.bind("<Control-KeyPress>", self._entry_ctrl_key)
+        self.entry.bind("<Shift-Insert>", self._entry_paste)
+        ctk.CTkButton(in_row, text="Перевести", width=100, height=38, font=(FONT, 13, "bold"),
+                      fg_color=GOLD, hover_color=GOLD_HOVER, text_color=BG,
+                      command=self.on_manual).pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(manual.body, text="Перевод сразу скопируется — останется нажать Ctrl+V",
+                     font=(FONT, 10), text_color=MUTED).pack(anchor="w", pady=(6, 0))
+
+        # ---- офлайн-модели + статус
+        foot = ctk.CTkFrame(self.tab_tr, fg_color=CARD, corner_radius=14, border_width=1, border_color=BORDER)
+        foot.pack(side="bottom", fill="x", padx=18, pady=(6, 16))
+        er = ctk.CTkFrame(foot, fg_color="transparent")
+        er.pack(fill="x", padx=16, pady=(12, 6))
+        ctk.CTkLabel(er, text="Офлайн-модель", font=(FONT, 13, "bold"), text_color=TEXT).pack(side="left")
+        self.engine_map = {"Быстрая": "fast", "Качественная": "quality"}
+        self.engine_seg = ctk.CTkSegmentedButton(
+            er, values=list(self.engine_map), command=self.on_engine, font=(FONT, 12, "bold"), height=28,
+            fg_color=CARD_2, selected_color=GOLD, selected_hover_color=GOLD_HOVER,
+            unselected_color=CARD_2, unselected_hover_color=BORDER, text_color=TEXT)
+        self.engine_seg.pack(side="right")
+        self.engine_seg.set({v: k for k, v in self.engine_map.items()}[self.engine.offline_engine])
+
+        self.model_rows = {}
+        for key, title, sub in (("fast", "Быстрая · Argos", "~200 МБ, мгновенно"),
+                                ("quality", "Качественная · Tencent HY-MT", "~1,1 ГБ, точнее, медленнее")):
+            r = ctk.CTkFrame(foot, fg_color="transparent")
+            r.pack(fill="x", padx=16, pady=2)
+            dot = ctk.CTkLabel(r, text="●", font=(FONT, 14), text_color=RED, width=14)
+            dot.pack(side="left")
+            txt = ctk.CTkFrame(r, fg_color="transparent")
+            txt.pack(side="left", padx=6)
+            ctk.CTkLabel(txt, text=title, font=(FONT, 12), text_color=TEXT, height=16).pack(anchor="w")
+            lab = ctk.CTkLabel(txt, text=sub, font=(FONT, 10), text_color=MUTED, height=14)
+            lab.pack(anchor="w")
+            btn = ctk.CTkButton(r, text="Скачать", width=96, height=28, font=(FONT, 12, "bold"),
+                                fg_color=CARD_2, hover_color=BORDER, border_width=1, border_color=GOLD,
+                                text_color=GOLD, command=lambda k=key: self.on_download(k))
+            btn.pack(side="right")
+            fbtn = ctk.CTkButton(r, text="Из файла", width=80, height=28, font=(FONT, 12),
+                                 fg_color="transparent", hover_color=BORDER, text_color=MUTED,
+                                 command=self.on_install_file)
+            fbtn.pack(side="right", padx=(0, 6))
+            self.model_rows[key] = (dot, lab, btn, sub)
+
+        ur = ctk.CTkFrame(foot, fg_color="transparent")
+        ur.pack(fill="x", padx=16, pady=(6, 0))
+        ctk.CTkLabel(ur, text="Выгружать из памяти, если не нужна", font=(FONT, 11),
+                     text_color=MUTED).pack(side="left")
+        self.unload_map = {"5 мин": 5, "10 мин": 10, "30 мин": 30, "1 час": 60, "Никогда": 0}
+        self.unload_menu = ctk.CTkOptionMenu(
+            ur, values=list(self.unload_map), command=self.on_unload_minutes, width=100, height=24,
+            font=(FONT, 11), dropdown_font=(FONT, 11), fg_color=CARD_2, button_color=CARD_2,
+            button_hover_color=BORDER, dropdown_fg_color=CARD, dropdown_hover_color=CARD_2, text_color=TEXT)
+        self.unload_menu.pack(side="right")
+        cur = self.settings.get("unload_minutes", 10)
+        self.unload_menu.set(next((k for k, v in self.unload_map.items() if v == cur), "10 мин"))
+        self.progress = ctk.CTkProgressBar(foot, height=6, progress_color=GOLD, fg_color=CARD_2)
+        self.progress.set(0)
+        self.status = ctk.CTkLabel(foot, text="Готово", font=(FONT, 11), text_color=GREEN, anchor="w",
+                                   justify="left", wraplength=470)
+        self.status.pack(fill="x", padx=16, pady=(6, 10))
+
+        # ---- история / входящие
+        hist = Card(self.tab_tr, "История и входящие", "EN → RU")
+        hist.pack(fill="both", expand=True, padx=18, pady=6)
+        top = ctk.CTkFrame(hist.body, fg_color="transparent")
+        top.pack(fill="x", pady=(0, 6))
+        self.watch_switch = ctk.CTkSwitch(top, text="Переводить английский, который я копирую",
+                                          font=(FONT, 12), text_color=TEXT, progress_color=GOLD,
+                                          command=self.on_watch)
+        self.watch_switch.pack(side="left")
+        if self.settings["watch_clipboard"]:
+            self.watch_switch.select()
+        ctk.CTkButton(top, text="Очистить", width=70, height=24, font=(FONT, 11), fg_color="transparent",
+                      hover_color=BORDER, text_color=MUTED, command=self.clear_history).pack(side="right")
+        # обычный список: вся вкладка и так прокручивается
+        self.history = ctk.CTkFrame(hist.body, fg_color="transparent")
+        self.history.pack(fill="x")
+        self.empty_label = ctk.CTkLabel(
+            self.history, text="Пока пусто.\nСкопируй английский текст (Ctrl+C) —\nперевод появится здесь.",
+            font=(FONT, 12), text_color=MUTED, justify="center")
+        self.empty_label.pack(pady=30)
+
+
+    # ================================================================ очередь UI
+    def _fit_geometry(self, w, h):
+        """Не даём окну быть выше экрана (с учётом масштаба Windows)."""
+        try:
+            scale = ctk.ScalingTracker.get_window_scaling(self)
+            max_h = int((self.winfo_screenheight() - 90) / max(scale, 1.0))
+            h = max(560, min(h, max_h))
+        except Exception:
+            pass
+        self.geometry(f"{w}x{h}")
+        self.minsize(480, min(h, 600))
+
+    def on_tab(self, label):
+        key = self.tab_map[label]
+        self.settings["tab"] = key
+        save_settings(self.settings)
+        self.tab_tr.pack_forget()
+        self.tab_caps.pack_forget()
+        (self.tab_tr if key == "tr" else self.tab_caps).pack(fill="both", expand=True)
+
+    # ================================================================ вкладка «Раскладка»
+    def _build_caps(self, P):
+        how = Card(P, "Исправление раскладки по CapsLock")
+        how.pack(fill="x", padx=18, pady=6)
+        top = ctk.CTkFrame(how.body, fg_color="transparent")
+        top.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(top, text="Набрал не в той раскладке — нажми CapsLock", font=(FONT, 12),
+                     text_color=MUTED).pack(side="left")
+        self.caps_sw = ctk.CTkSwitch(top, text="Включено", font=(FONT, 12, "bold"), text_color=TEXT,
+                                     progress_color=GOLD, command=self.on_caps_enabled)
+        self.caps_sw.pack(side="right")
+        if self.caps_settings["enabled"]:
+            self.caps_sw.select()
+        for key, txt in (("Caps", "Исправить набранное и сменить язык («ghbdtn rfr ltkf» → «привет как дела»)."
+                                  " Если ничего не набрано — просто сменить язык"),
+                         ("Caps ещё раз", "Отменить исправление"),
+                         ("Держать Caps", "Обычный Caps Lock (ЗАГЛАВНЫЕ)"),
+                         ("Shift + Caps", "Переделать выделенный текст")):
+            r = ctk.CTkFrame(how.body, fg_color="transparent")
+            r.pack(fill="x", pady=3)
+            ctk.CTkLabel(r, text=key, width=112, height=26, font=(FONT, 12, "bold"), text_color=GOLD,
+                         fg_color=CARD_2, corner_radius=6).pack(side="left", anchor="n")
+            ctk.CTkLabel(r, text=txt, font=(FONT, 12), text_color=TEXT, justify="left", anchor="w",
+                         wraplength=330).pack(side="left", padx=10, fill="x")
+
+        tr = Card(P, "Попробуй здесь")
+        tr.pack(fill="x", padx=18, pady=6)
+        ctk.CTkLabel(tr.body, text="Набери «ghbdtn rfr ltkf» в английской раскладке и нажми CapsLock",
+                     font=(FONT, 11), text_color=MUTED).pack(anchor="w")
+        ctk.CTkEntry(tr.body, height=36, font=(FONT, 14), fg_color=CARD_2, border_color=BORDER,
+                     text_color=TEXT).pack(fill="x", pady=(6, 0))
+
+        st = Card(P, "Настройки")
+        st.pack(fill="x", padx=18, pady=6)
+        sr = ctk.CTkFrame(st.body, fg_color="transparent")
+        sr.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(sr, text="CapsLock исправляет:", font=(FONT, 12), text_color=TEXT).pack(side="left")
+        self.scope_map = {"Всю фразу": "phrase", "Последнее слово": "word"}
+        seg = ctk.CTkSegmentedButton(
+            sr, values=list(self.scope_map), command=self.on_scope, font=(FONT, 12, "bold"), height=28,
+            fg_color=CARD_2, selected_color=GOLD, selected_hover_color=GOLD_HOVER,
+            unselected_color=CARD_2, unselected_hover_color=BORDER, text_color=TEXT)
+        seg.pack(side="right")
+        seg.set({v: k for k, v in self.scope_map.items()}[self.caps_settings["scope"]])
+        self.sel_sw = ctk.CTkSwitch(st.body, text="Shift + Caps переделывает выделенный текст", font=(FONT, 12),
+                                    text_color=TEXT, progress_color=GOLD, command=self.on_caps_selection)
+        self.sel_sw.pack(anchor="w", pady=3)
+        if self.caps_settings["selection"]:
+            self.sel_sw.select()
+        self.auto_sw = ctk.CTkSwitch(st.body, text="Запускать Капслокер вместе с Windows (в трее)", font=(FONT, 12),
+                                     text_color=TEXT, progress_color=GOLD, command=self.on_autostart)
+        self.auto_sw.pack(anchor="w", pady=3)
+        if self.settings["autostart"]:
+            self.auto_sw.select()
+        hr = ctk.CTkFrame(st.body, fg_color="transparent")
+        hr.pack(fill="x", pady=(8, 0))
+        ctk.CTkLabel(hr, text="Удержание для Caps Lock:", font=(FONT, 12), text_color=TEXT).pack(side="left")
+        self.hold_lbl = ctk.CTkLabel(hr, text="", font=(FONT, 12, "bold"), text_color=GOLD, width=60)
+        self.hold_lbl.pack(side="right")
+        sl = ctk.CTkSlider(st.body, from_=250, to=900, number_of_steps=13, button_color=GOLD,
+                           button_hover_color=GOLD_HOVER, progress_color=GOLD, command=self.on_hold)
+        sl.pack(fill="x", pady=(2, 6))
+        sl.set(self.caps_settings["hold_ms"])
+        self.on_hold(self.caps_settings["hold_ms"], save=False)
+        ctk.CTkLabel(st.body, text="Не работать в программах (через запятую, например: game.exe):",
+                     font=(FONT, 11), text_color=MUTED).pack(anchor="w", pady=(4, 2))
+        self.ex_entry = ctk.CTkEntry(st.body, height=32, font=(FONT, 12), fg_color=CARD_2, border_color=BORDER,
+                                     text_color=TEXT, placeholder_text="пусто — работает везде")
+        self.ex_entry.pack(fill="x")
+        if self.caps_settings["exclude"]:
+            self.ex_entry.insert(0, self.caps_settings["exclude"])
+        self.ex_entry.bind("<FocusOut>", lambda e: self.on_exclude())
+        self.ex_entry.bind("<Return>", lambda e: self.on_exclude())
+
+        self.caps_status = ctk.CTkLabel(P, text="Работает. Закрытие окна сворачивает Капслокер в трей.",
+                                        font=(FONT, 11), text_color=GREEN, anchor="w")
+        self.caps_status.pack(fill="x", padx=22, pady=(6, 12))
+
+    def caps_status_set(self, text, color=MUTED):
+        self.caps_status.configure(text=text, text_color=color)
+
+    def on_caps_enabled(self):
+        self.caps_settings["enabled"] = bool(self.caps_sw.get())
+        save_settings(self.settings)
+        self.caps_status_set("Включено" if self.caps_settings["enabled"]
+                             else "Выключено — CapsLock работает как обычно",
+                             GREEN if self.caps_settings["enabled"] else MUTED)
+        self._update_tray()
+
+    def on_scope(self, label):
+        self.caps_settings["scope"] = self.scope_map[label]
+        save_settings(self.settings)
+
+    def on_caps_selection(self):
+        self.caps_settings["selection"] = bool(self.sel_sw.get())
+        save_settings(self.settings)
+
+    def on_hold(self, val, save=True):
+        ms = int(round(float(val) / 50) * 50)
+        self.hold_lbl.configure(text=f"{ms / 1000:.2f} с")
+        self.caps_settings["hold_ms"] = ms
+        if save:
+            save_settings(self.settings)
+
+    def on_exclude(self):
+        self.caps_settings["exclude"] = self.ex_entry.get().strip()
+        save_settings(self.settings)
+
+    def on_autostart(self):
+        on = bool(self.auto_sw.get())
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                                 winreg.KEY_SET_VALUE)
+            try:
+                if on:
+                    exe = sys.executable if getattr(sys, "frozen", False) else os.path.abspath(sys.argv[0])
+                    winreg.SetValueEx(key, "Capslocker", 0, winreg.REG_SZ, f'"{exe}" --tray')
+                else:
+                    try:
+                        winreg.DeleteValue(key, "Capslocker")
+                    except FileNotFoundError:
+                        pass
+                for oldname in ("CapsFix",):   # старый отдельный CapsFix больше не нужен
+                    try:
+                        winreg.DeleteValue(key, oldname)
+                    except FileNotFoundError:
+                        pass
+            finally:
+                winreg.CloseKey(key)
+            self.settings["autostart"] = on
+            save_settings(self.settings)
+            self.caps_status_set("Капслокер будет запускаться вместе с Windows" if on else "Автозапуск выключен", GREEN)
+        except Exception as e:
+            log("autostart: " + traceback.format_exc())
+            self.caps_status_set(f"Не удалось: {e}", RED)
+
+    def _on_caps_event(self, kind, text):
+        if kind == "fix":
+            self.caps_status_set(f"Исправлено: {text}", GREEN)
+        elif kind == "undo":
+            self.caps_status_set(f"Отменено: {text}", BLUE)
+        elif kind == "switch":
+            self.caps_status_set("Язык переключён", MUTED)
+        elif kind == "selection":
+            self.caps_status_set(f"Выделение переделано: {text}", GREEN)
+        elif kind == "caps":
+            self.caps_status_set(text, BLUE)
+        elif kind == "error":
+            self.caps_status_set(text, RED)
+
+    # ================================================================ трей
+    def _tray_image(self):
+        from PIL import Image
+        return Image.open(resource_path("tray_on.png" if self.caps_settings["enabled"] else "tray_off.png"))
+
+    def _start_tray(self):
+        try:
+            import pystray
+            menu = pystray.Menu(
+                pystray.MenuItem("Открыть Капслокер", lambda i, it: self.ui("show"), default=True),
+                pystray.MenuItem("Исправление раскладки", lambda i, it: self.ui("caps_toggle"),
+                                 checked=lambda it: self.caps_settings["enabled"]),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Выход", lambda i, it: self.ui("quit")),
+            )
+            self.tray = pystray.Icon("Capslocker", self._tray_image(), "Капслокер — перевод и раскладка", menu)
+            self.tray.run_detached()
+        except Exception:
+            log("tray: " + traceback.format_exc())
+            self.tray = None
+
+    def _update_tray(self):
+        if self.tray:
+            try:
+                self.tray.icon = self._tray_image()
+                self.tray.update_menu()
+            except Exception:
+                pass
+
+    def show_window(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def hide_to_tray(self):
+        try:
+            self.on_exclude()
+        except Exception:
+            pass
+        if self.tray is None:
+            self.on_close()
+            return
+        if self.settings.get("first_run"):
+            self.settings["first_run"] = False
+            save_settings(self.settings)
+            try:
+                self.tray.notify("Капслокер работает в трее. Открыть — двойной клик по значку.", "Капслокер")
+            except Exception:
+                pass
+        self.withdraw()
+
+    def ui(self, *item):
+        self.ui_queue.put(item)
+
+    def set_status(self, text, color=MUTED):
+        self.ui("status", text, color)
+
+    def _poll_queue(self):
+        try:
+            while True:
+                item = self.ui_queue.get_nowait()
+                kind = item[0]
+                if kind == "status":
+                    self.status.configure(text=item[1], text_color=item[2])
+                elif kind == "history":
+                    self._add_history(*item[1:])
+                elif kind == "models":
+                    self.refresh_models()
+                elif kind == "progress":
+                    val = item[1]
+                    if val is None:
+                        self.progress.pack_forget()
+                    else:
+                        if not self.progress.winfo_ismapped():
+                            self.progress.pack(fill="x", padx=16, pady=(2, 6), before=self.status)
+                        self.progress.set(val)
+                elif kind == "key":
+                    self.key_btn.configure(text=item[1])
+                elif kind == "error":
+                    messagebox.showerror(APP_NAME, item[1])
+                elif kind == "capsev":
+                    self._on_caps_event(item[1], item[2])
+                elif kind == "show":
+                    self.show_window()
+                elif kind == "quit":
+                    self.on_close()
+                    return
+                elif kind == "caps_toggle":
+                    if self.caps_settings["enabled"]:
+                        self.caps_sw.deselect()
+                    else:
+                        self.caps_sw.select()
+                    self.on_caps_enabled()
+                elif kind == "test_done":
+                    self.test_btn.configure(state="normal", text="Проверить")
+                elif kind == "info":
+                    messagebox.showinfo(APP_NAME, item[1])
+        except queue.Empty:
+            pass
+        self.after(80, self._poll_queue)
+
+    def _add_history(self, original, translated, direction, how):
+        self.empty_label.pack_forget()
+        item = HistoryItem(self.history, original, translated, direction, how, self.copy_from_history)
+        if self.history_items:
+            item.pack(fill="x", pady=4, before=self.history_items[-1])
+        else:
+            item.pack(fill="x", pady=4)
+        self.history_items.append(item)
+        if len(self.history_items) > 15:
+            self.history_items.pop(0).destroy()
+        try:
+            self.history._parent_canvas.yview_moveto(0)
+        except Exception:
+            pass
+
+    def clear_history(self):
+        for it in self.history_items:
+            it.destroy()
+        self.history_items.clear()
+        self.empty_label.pack(pady=30)
+
+    def copy_from_history(self, text):
+        self._copy(text)
+        self.set_status("Скопировано — Ctrl+V", GREEN)
+
+    def refresh_models(self):
+        ready = {"fast": self.engine.fast_ready(), "quality": self.engine.hymt.is_installed()}
+        for key, (dot, lab, btn, sub) in self.model_rows.items():
+            active = key == self.engine.offline_engine
+            if ready[key]:
+                dot.configure(text_color=GREEN if active else MUTED)
+                lab.configure(text=("установлена · используется" if active else "установлена"))
+                btn.configure(text="Обновить", state="disabled" if self.downloading else "normal")
+            else:
+                dot.configure(text_color=RED if active else MUTED)
+                lab.configure(text=sub + (" · не скачана" if active else ""))
+                btn.configure(text="Скачать", state="disabled" if self.downloading else "normal")
+
+    def _update_mode_hint(self):
+        hints = {
+            "auto": "Через интернет, а без сети — офлайн",
+            "online": "Всегда через интернет — лучшее качество",
+            "offline": "Всё на твоём компьютере, интернет не нужен",
+        }
+        self.mode_hint.configure(text=hints[self.engine.mode])
+
+    # ================================================================ обработчики
+    def on_mode(self, label):
+        mode = self.mode_map[label]
+        self.engine.mode = mode
+        self.settings["mode"] = mode
+        save_settings(self.settings)
+        self._update_mode_hint()
+        if mode == "offline" and not self.engine.offline_ready():
+            self.set_status("Для офлайна скачай модель — кнопка внизу", ORANGE)
+        self._warm_async()
+
+    def on_service(self, label):
+        key = {v: k for k, v in self.service_names.items()}[label]
+        self.engine.online.preferred = key
+        self.settings["online_service"] = key
+        save_settings(self.settings)
+        self.set_status(f"Онлайн-перевод: {label}", GREEN)
+
+    def on_fallback(self):
+        self.engine.online.fallback = bool(self.fallback_switch.get())
+        self.settings["online_fallback"] = self.engine.online.fallback
+        save_settings(self.settings)
+
+    def on_test_services(self):
+        self.test_btn.configure(state="disabled", text="Проверяю…")
+        self.set_status("Проверяю онлайн-сервисы…", BLUE)
+
+        def work():
+            try:
+                res = self.engine.online.test_all()
+                parts, lines = [], []
+                for key, (ok, info, sec) in res.items():
+                    name = self.engine.online.services[key].name
+                    if ok is None:
+                        parts.append(f"{name} —")
+                        lines.append(f"—  {name}: {info}")
+                    elif ok:
+                        parts.append(f"{name} ✔")
+                        lines.append(f"✔  {name} ({sec:.1f} с): {info}")
+                    else:
+                        parts.append(f"{name} ✖")
+                        lines.append(f"✖  {name}: {info}")
+                good = [k for k, v in res.items() if v[0]]
+                self.set_status("  ".join(parts), GREEN if good else RED)
+                self.ui("info", "Проверка онлайн-сервисов\n(фраза «Привет, нужен танк в подземелье»)\n\n"
+                        + "\n\n".join(lines))
+            except Exception as e:
+                log("test failed: " + traceback.format_exc())
+                self.set_status(str(e)[:80], RED)
+            finally:
+                self.ui("test_done")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_engine(self, label):
+        eng = self.engine_map[label]
+        self.engine.offline_engine = eng
+        self.settings["offline_engine"] = eng
+        save_settings(self.settings)
+        self.refresh_models()
+        if eng != "quality":
+            threading.Thread(target=self.engine.hymt.stop, daemon=True).start()
+        if not self.engine.offline_ready():
+            self.set_status("Эта модель ещё не скачана — нажми «Скачать»", ORANGE)
+        else:
+            self.set_status("Офлайн-модель: " + label.lower(), GREEN)
+        self._warm_async()
+
+    def _warm_async(self):
+        threading.Thread(target=self._warm_up, daemon=True).start()
+
+    def on_topmost(self):
+        self.settings["keep_on_top"] = bool(self.pin_switch.get())
+        self.attributes("-topmost", self.settings["keep_on_top"])
+        save_settings(self.settings)
+
+    def on_autosend(self):
+        self.settings["auto_send"] = bool(self.send_switch.get())
+        save_settings(self.settings)
+
+    def on_watch(self):
+        self.settings["watch_clipboard"] = bool(self.watch_switch.get())
+        save_settings(self.settings)
+
+    def on_rebind(self):
+        if self.binding or not self.kb:
+            return
+        self.binding = True
+        self.key_btn.configure(text="Жми…")
+        self.set_status("Нажми новую клавишу или сочетание (Esc — отмена)", BLUE)
+
+        def work():
+            kb = self.kb
+            try:
+                if self.hotkey_handle is not None:
+                    try:
+                        kb.remove_hotkey(self.hotkey_handle)
+                    except Exception:
+                        pass
+                    self.hotkey_handle = None
+                time.sleep(0.3)
+                pressed = {}          # scan_code -> имя
+                order = []
+                while True:
+                    ev = kb.read_event(suppress=False)
+                    if ev.event_type == "down":
+                        if ev.scan_code not in pressed:
+                            pressed[ev.scan_code] = (ev.name or "").lower()
+                            order.append(ev.scan_code)
+                    elif ev.event_type == "up" and pressed:
+                        break
+                names = [pressed[sc] for sc in order]
+                if names == ["esc"]:
+                    return
+                # модификаторы вперёд, основная клавиша последней
+                order.sort(key=lambda sc: 0 if pressed[sc] in MODIFIER_NAMES else 1)
+                if all(pressed[sc] in MODIFIER_NAMES for sc in order):
+                    self.set_status("Нужна обычная клавиша, не только Ctrl/Alt/Shift", ORANGE)
+                    return
+                label = "+".join(
+                    (pressed[sc].replace("left ", "").replace("right ", "") or f"#{sc}").upper()
+                    if len(pressed[sc]) <= 1 else
+                    (pressed[sc].replace("left ", "").replace("right ", "") or f"#{sc}").capitalize()
+                    for sc in order)
+                self.settings["hotkey"] = order
+                self.settings["hotkey_label"] = label
+                save_settings(self.settings)
+            except Exception:
+                log("rebind failed: " + traceback.format_exc())
+            finally:
+                self.binding = False
+                self._setup_hotkey()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _entry_ctrl_key(self, event):
+        """Ctrl+V/C/X/A по коду клавиши — работает и при русской раскладке
+        (и когда текст вставляют программы диктовки вроде Handy)."""
+        action = EDIT_KEYCODES.get(event.keycode)
+        if not action:
+            return None
+        if event.keysym.lower() in ("v", "c", "x", "a"):
+            if action != "select_all":
+                return None  # английская раскладка — Tk справится сам
+        if action == "select_all":
+            self.entry.select_range(0, "end")
+            self.entry.icursor("end")
+        elif action == "<<Paste>>":
+            return self._entry_paste()
+        else:
+            self.entry._entry.event_generate(action)
+        return "break"
+
+    def _entry_paste(self, _event=None):
+        try:
+            text = self.clipboard_get()
+        except Exception:
+            try:
+                text = self._clip()
+            except Exception:
+                return "break"
+        text = text.replace("\r", " ").replace("\n", " ")
+        w = self.entry._entry
+        try:
+            if w.selection_present():
+                w.delete("sel.first", "sel.last")
+        except Exception:
+            pass
+        w.insert("insert", text)
+        return "break"
+
+    def on_install_file(self):
+        from tkinter import filedialog
+        paths = filedialog.askopenfilenames(
+            title="Выбери файлы моделей (.argosmodel или .gguf)",
+            filetypes=[("Офлайн-модель", "*.argosmodel *.zip *.gguf"), ("Все файлы", "*.*")])
+        if not paths:
+            return
+
+        def work():
+            done = []
+            for p in paths:
+                name = os.path.basename(p).lower()
+                if name.endswith(".gguf"):
+                    try:
+                        def prog(pct, msg):
+                            self.ui("progress", pct / 100 if pct >= 0 else None)
+                            self.set_status(msg, BLUE)
+                        self.engine.hymt.install_from_file(p, prog)
+                        done.append("HY-MT")
+                    except Exception as e:
+                        log("install gguf failed: " + traceback.format_exc())
+                        self.ui("error", f"Не удалось установить {os.path.basename(p)}:\n{e}")
+                    finally:
+                        self.ui("progress", None)
+                    continue
+                key = ("en", "ru") if "en_ru" in name else ("ru", "en") if "ru_en" in name else None
+                if key is None:
+                    self.ui("error", f"Не понял, что за файл: {os.path.basename(p)}\n"
+                                     "В названии должно быть ru_en или en_ru.")
+                    continue
+                try:
+                    self.set_status(f"Устанавливаю {os.path.basename(p)}…", BLUE)
+                    self.engine.offline[key].install_from_file(p)
+                    done.append("RU→EN" if key == ("ru", "en") else "EN→RU")
+                except Exception as e:
+                    log("install file failed: " + traceback.format_exc())
+                    self.ui("error", f"Не удалось установить {os.path.basename(p)}:\n{e}")
+            if done:
+                self.set_status("Установлено: " + ", ".join(done), GREEN)
+            self.ui("models")
+            self._warm_async()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_download(self, which="fast"):
+        if self.downloading:
+            return
+        self.downloading = True
+        self.refresh_models()
+        self.ui("progress", 0)
+
+        def work():
+            try:
+                if which == "quality":
+                    def prog(pct, msg):
+                        if pct >= 0:
+                            self.ui("progress", pct / 100)
+                        self.set_status(msg + (f" ({pct}%)" if pct >= 0 else ""), BLUE)
+                    self.engine.hymt.download(prog, "Модель HY-MT")
+                    self.set_status("Качественная модель готова ✔", GREEN)
+                else:
+                    labels = {("ru", "en"): "Модель RU→EN", ("en", "ru"): "Модель EN→RU"}
+                    items = list(self.engine.offline.items())
+                    for i, (key, model) in enumerate(items):
+                        def prog(pct, msg, i=i):
+                            if pct >= 0:
+                                self.ui("progress", (i + pct / 100) / len(items))
+                            self.set_status(msg + (f" ({pct}%)" if pct >= 0 else ""), BLUE)
+                        model.download(prog, labels[key])
+                    self.set_status("Быстрые модели готовы ✔", GREEN)
+            except Exception as e:
+                log("download failed: " + traceback.format_exc())
+                self.set_status("Не удалось скачать модель", RED)
+                if which == "quality":
+                    self.ui("error", "Не удалось скачать модель:\n%s\n\n"
+                                     "Варианты:\n"
+                                     "• включи VPN и нажми «Скачать» ещё раз (докачает с того же места);\n"
+                                     "• или скачай файл через браузер и нажми «Из файла»:\n"
+                                     "  huggingface.co/tencent/HY-MT1.5-1.8B-GGUF\n"
+                                     "  файл HY-MT1.5-1.8B-Q4_K_M.gguf" % e)
+                else:
+                    self.ui("error", "Не удалось скачать модели:\n%s\n\n"
+                                     "Сервер моделей может не открываться из России. Варианты:\n"
+                                     "• включи VPN и нажми «Скачать» ещё раз;\n"
+                                     "• или скачай 2 файла через браузер и нажми «Из файла»:\n"
+                                     "  argos-net.com/v1/translate-ru_en-1_9.argosmodel\n"
+                                     "  argos-net.com/v1/translate-en_ru-1_9.argosmodel" % e)
+            finally:
+                self.downloading = False
+                self.ui("progress", None)
+                self.ui("models")
+                self._warm_async()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_manual(self):
+        text = self.entry.get().strip()
+        if not text:
+            return
+        self.entry.delete(0, "end")
+
+        def work():
+            try:
+                self.set_status("Перевожу…", BLUE)
+                direction = detect_direction(text)
+                result, how = self.engine.translate(text)
+                self._copy(result)
+                if direction:
+                    self.ui("history", text, result, direction, how)
+                self.set_status(f"Скопировано ({how}) — можно Ctrl+V", GREEN)
+                if direction == ("ru", "en"):
+                    self._warn_length(result)
+            except Exception as e:
+                log("manual failed: " + traceback.format_exc())
+                self.set_status(str(e)[:80], RED)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ================================================================ буфер обмена
+    def _copy(self, text):
+        import pyperclip
+        self.own_clip.add(text)
+        if len(self.own_clip) > 60:
+            self.own_clip = {text}
+        pyperclip.copy(text)
+
+    def _clip(self):
+        import pyperclip
+        return pyperclip.paste()
+
+    def _warn_length(self, text):
+        if len(text) > WOW_CHAT_LIMIT:
+            self.set_status(f"Длинно: {len(text)} симв., чат WoW примет только {WOW_CHAT_LIMIT}", ORANGE)
+
+    def _clipboard_watcher(self):
+        try:
+            self.last_clip = self._clip()
+        except Exception:
+            pass
+        while True:
+            time.sleep(0.5)
+            if not self.settings.get("watch_clipboard") or self.busy:
+                continue
+            try:
+                text = self._clip()
+            except Exception:
+                continue
+            if not text or text == self.last_clip:
+                continue
+            self.last_clip = text
+            import engine as _caps
+            if time.time() < _caps.CLIP_QUIET_UNTIL:
+                continue  # это раскладка взяла текст, а не пользователь скопировал
+            if text in self.own_clip or len(text) > 2000:
+                continue
+            if detect_direction(text) != ("en", "ru"):
+                continue
+            try:
+                self.set_status("Перевожу входящее…", BLUE)
+                result, how = self.engine.translate(text, ("en", "ru"))
+                self.ui("history", text.strip(), result, ("en", "ru"), how)
+                self.set_status(f"Входящее переведено ({how})", GREEN)
+            except Exception as e:
+                log("incoming failed: " + traceback.format_exc())
+                self.set_status(str(e)[:80], RED)
+
+    # ================================================================ горячая клавиша
+    def _setup_hotkey(self):
+        try:
+            import keyboard
+            self.kb = keyboard
+        except Exception:
+            self.set_status("Горячая клавиша недоступна", RED)
+            return
+        if self.hotkey_handle is not None:
+            try:
+                self.kb.remove_hotkey(self.hotkey_handle)
+            except Exception:
+                pass
+            self.hotkey_handle = None
+        hk = self.settings.get("hotkey")
+        if not hk:
+            hk = self.settings["hotkey"] = "f9"
+        if isinstance(hk, list):
+            hk = tuple(hk)   # сочетание скан-кодов; список библиотека не принимает
+        try:
+            self.hotkey_handle = self.kb.add_hotkey(hk, self._on_hotkey, suppress=True)
+        except Exception as e:
+            log("hotkey failed: %r (%r), back to F9" % (e, hk))
+            self.settings["hotkey"] = "f9"
+            self.settings.pop("hotkey_label", None)
+            save_settings(self.settings)
+            try:
+                self.hotkey_handle = self.kb.add_hotkey("f9", self._on_hotkey, suppress=True)
+            except Exception:
+                self.set_status("Не удалось назначить клавишу", RED)
+                return
+        label = self.settings.get("hotkey_label") or nice_key(self.settings["hotkey"])
+        self.ui("key", label)
+        self.set_status(f"Готово. Клавиша {label} работает", GREEN)
+
+    def _on_hotkey(self):
+        if self.busy or self.binding:
+            return
+        threading.Thread(target=self._hotkey_work, daemon=True).start()
+
+    def _hotkey_work(self):
+        kb = self.kb
+        self.busy = True
+        try:
+            for mod in ("ctrl", "alt", "shift"):
+                deadline = time.time() + 1
+                while kb.is_pressed(mod) and time.time() < deadline:
+                    time.sleep(0.02)
+            old_clip = ""
+            try:
+                old_clip = self._clip()
+            except Exception:
+                pass
+            marker = "⁣wowtr⁣"
+            self._copy(marker)
+            kb.send([SC_CTRL, SC_A])
+            time.sleep(0.05)
+            kb.send([SC_CTRL, SC_C])
+            text = marker
+            for _ in range(20):
+                time.sleep(0.03)
+                text = self._clip()
+                if text != marker:
+                    break
+            if text == marker or not text.strip():
+                self._copy(old_clip)
+                self.set_status("Не нашёл текст. Открой чат и напиши фразу", ORANGE)
+                return
+            self.set_status("Перевожу…", BLUE)
+            result, how = self.engine.translate(text, ("ru", "en"))
+            self._copy(result)
+            kb.send([SC_CTRL, SC_A])
+            time.sleep(0.03)
+            kb.send([SC_CTRL, SC_V])
+            time.sleep(0.05)
+            if self.settings.get("auto_send"):
+                kb.send(SC_ENTER)
+            if result != text.strip():
+                self.ui("history", text.strip(), result, ("ru", "en"), how)
+            self.set_status(f"Вставлено в чат ({how})", GREEN)
+            self._warn_length(result)
+        except Exception as e:
+            log("hotkey failed: " + traceback.format_exc())
+            self.set_status(str(e)[:80], RED)
+        finally:
+            try:
+                self.last_clip = self._clip()
+            except Exception:
+                pass
+            self.busy = False
+
+    def _warm_up(self):
+        """Заранее модели грузим только в режиме «Офлайн».
+        В «Авто» модель загрузится сама, когда пропадёт интернет."""
+        try:
+            if self.engine.mode != "offline":
+                if self.engine.unload_models():
+                    self.set_status("Офлайн-модель выгружена — загрузится, если пропадёт интернет", MUTED)
+                return
+            self.engine.last_offline_use = time.time()
+            if self.engine.offline_engine == "quality":
+                for m in self.engine.offline.values():
+                    m.unload()
+                if self.engine.hymt.is_installed():
+                    self.set_status("Загружаю качественную модель…", BLUE)
+                    self.engine.hymt.start()
+                    self.set_status("Качественная модель загружена", GREEN)
+            else:
+                self.engine.hymt.unload()
+                for m in self.engine.offline.values():
+                    m.warm_up()
+        except Exception as e:
+            log("warm_up failed: " + traceback.format_exc())
+            self.set_status(str(e)[:80], RED)
+
+    def _idle_watcher(self):
+        """Выгружает офлайн-модели, если ими не пользовались заданное время."""
+        while True:
+            time.sleep(20)
+            try:
+                mins = int(self.settings.get("unload_minutes", 10) or 0)
+                if mins <= 0 or not self.engine.models_loaded():
+                    continue
+                if time.time() - self.engine.last_offline_use >= mins * 60:
+                    if self.engine.unload_models():
+                        self.set_status(f"Офлайн-модель выгружена: не использовалась {mins} мин", MUTED)
+            except Exception:
+                log("idle watcher: " + traceback.format_exc())
+
+    def on_unload_minutes(self, label):
+        self.settings["unload_minutes"] = self.unload_map[label]
+        save_settings(self.settings)
+        self.set_status(("Не выгружать модель" if not self.unload_map[label]
+                         else f"Модель выгрузится после {label} простоя"), GREEN)
+
+    def on_close(self):
+        try:
+            self.engine.hymt.stop()
+        except Exception:
+            pass
+        try:
+            self.caps_engine.stop()
+        except Exception:
+            pass
+        try:
+            if self.tray:
+                self.tray.stop()
+        except Exception:
+            pass
+        try:
+            if self.kb:
+                self.kb.unhook_all()
+        except Exception:
+            pass
+        self.destroy()
+        os._exit(0)
+
+
+def main():
+    ctypes.windll.kernel32.CreateMutexW(None, False, "Capslocker_single_instance_mutex")
+    if ctypes.windll.kernel32.GetLastError() == 183:
+        messagebox.showinfo(APP_NAME, "Капслокер уже запущен — ищи значок в трее рядом с часами.")
+        return
+    try:
+        app = App()
+        app.on_tab({v: k for k, v in app.tab_map.items()}[app.settings.get("tab", "tr")])
+        app.tab_seg.set({v: k for k, v in app.tab_map.items()}[app.settings.get("tab", "tr")])
+        if "--tray" in sys.argv and not app.settings.get("first_run"):
+            app.withdraw()
+        app.mainloop()
+    except Exception:
+        err = traceback.format_exc()
+        log("fatal: " + err)
+        try:
+            messagebox.showerror(APP_NAME, "Программа упала с ошибкой:\n\n" + err[-800:])
+        except Exception:
+            print(err, file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

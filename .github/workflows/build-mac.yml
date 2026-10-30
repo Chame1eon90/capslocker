@@ -1,0 +1,89 @@
+name: Сборка для macOS
+
+on:
+  push:
+    branches: [main]
+    paths: ["mac/**", ".github/workflows/build-mac.yml"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            label: Apple-M
+          - runner: macos-15-intel
+            label: Intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python 3.12 с python.org (с Tk для окна)
+        run: |
+          curl -sSL -o py.pkg https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg
+          sudo installer -pkg py.pkg -target /
+          echo "/Library/Frameworks/Python.framework/Versions/3.12/bin" >> "$GITHUB_PATH"
+
+      - name: Библиотеки
+        run: |
+          python3.12 -m pip install --upgrade pip
+          python3.12 -m pip install pyinstaller customtkinter pyperclip certifi pillow \
+            ctranslate2 sentencepiece \
+            pyobjc-core pyobjc-framework-Quartz pyobjc-framework-Cocoa pyobjc-framework-ApplicationServices
+
+      - name: Проверка, что всё импортируется
+        working-directory: mac
+        run: |
+          python3.12 -c "import tkinter, customtkinter, ctranslate2, sentencepiece, Quartz, AppKit, ApplicationServices; print('tk', tkinter.TkVersion)"
+          python3.12 -c "import mac_input, layouts, core; print('mac_input ok')"
+
+      - name: Сборка Капслокер.app
+        working-directory: mac
+        run: |
+          python3.12 -m PyInstaller --noconfirm --windowed --name Capslocker \
+            --icon icon.png --osx-bundle-identifier com.capslocker.app \
+            --add-data "icon.png:." \
+            --collect-all customtkinter --collect-all ctranslate2 \
+            --collect-binaries sentencepiece --hidden-import sentencepiece \
+            --hidden-import Quartz --hidden-import AppKit --hidden-import ApplicationServices \
+            --hidden-import CoreFoundation --hidden-import certifi \
+            --exclude-module ctranslate2.converters \
+            app_mac.py
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Капслокер" dist/Capslocker.app/Contents/Info.plist || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Капслокер" dist/Capslocker.app/Contents/Info.plist
+          codesign --force --deep --sign - dist/Capslocker.app
+          cd dist && ditto -c -k --keepParent Capslocker.app "../../Capslocker-macOS-${{ matrix.label }}.zip"
+
+      - name: Пробный запуск (программа должна стартовать и не упасть сразу)
+        run: |
+          ./mac/dist/Capslocker.app/Contents/MacOS/Capslocker &
+          PID=$!
+          sleep 15
+          if kill -0 $PID 2>/dev/null; then echo "Запустилась и работает"; kill $PID; else echo "Упала при запуске"; cat "$HOME/Library/Application Support/Capslocker/log.txt" || true; exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Capslocker-macOS-${{ matrix.label }}
+          path: Capslocker-macOS-${{ matrix.label }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Выложить в «Releases»
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="mac-build-${{ github.run_number }}"
+          gh release create "$TAG" out/*.zip --repo "${{ github.repository }}" \
+            --title "Капслокер для macOS (сборка ${{ github.run_number }})" \
+            --notes "Apple-M — для Mac на чипах M1–M4. Intel — для старых Mac на Intel. Инструкция — в README."
