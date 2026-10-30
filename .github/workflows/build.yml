@@ -72,6 +72,15 @@ jobs:
           name: Capslocker-macOS-${{ matrix.label }}
           path: Capslocker-macOS-${{ matrix.label }}.zip
 
+      - name: Выложить в Releases (не дожидаясь других систем)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          gh release create "$TAG" --repo "${{ github.repository }}" --title "Капслокер (сборка ${{ github.run_number }})" \
+            --notes "Windows — Capslocker-Windows.zip. Mac: Apple-M — чипы M1–M4, Intel — старые Mac. Файлы появляются по мере готовности." || true
+          gh release upload "$TAG" "Capslocker-macOS-${{ matrix.label }}.zip" --repo "${{ github.repository }}" --clobber
+
   windows:
     runs-on: windows-latest
     steps:
@@ -118,19 +127,12 @@ jobs:
           name: Capslocker-Windows
           path: Capslocker-Windows.zip
 
-  release:
-    needs: [build, windows]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: out
-          merge-multiple: true
-      - name: Выложить в «Releases»
+      - name: Выложить в Releases (не дожидаясь Mac)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           TAG="build-${{ github.run_number }}"
-          gh release create "$TAG" out/*.zip --repo "${{ github.repository }}" \
-            --title "Капслокер (сборка ${{ github.run_number }})" \
-            --notes "Windows — Capslocker-Windows.zip. Mac: Apple-M — для чипов M1–M4, Intel — для старых Mac на Intel. Инструкция — в README."
+          gh release create "$TAG" --repo "${{ github.repository }}" --title "Капслокер (сборка ${{ github.run_number }})" \
+            --notes "Windows — Capslocker-Windows.zip. Mac: Apple-M — чипы M1–M4, Intel — старые Mac. Файлы появляются по мере готовности." || true
+          gh release upload "$TAG" Capslocker-Windows.zip --repo "${{ github.repository }}" --clobber
