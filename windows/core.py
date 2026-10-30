@@ -736,6 +736,8 @@ class HyMTModel:
 
 DEFAULT_GLOSSARY = """# Словарь игровых слов. Каждая строка: русское = english
 # Варианты через «/». Эти слова корректор не трогает, а переводчик переводит именно так.
+# «рус -> english» — только с русского на английский (для слов вроде need, go, drop,
+# которые в обычном английском тексте переводить по-игровому не нужно).
 # Строки с # — комментарии. Можно удалять ненужное и добавлять своё.
 
 # ===== World of Warcraft =====
@@ -757,16 +759,120 @@ DEFAULT_GLOSSARY = """# Словарь игровых слов. Каждая с�
 ДМ/Мёртвые копи = Deadmines/DM
 СФК = Shadowfang Keep/SFK
 БФД = Blackfathom Deeps/BFD
+# Классы
+воин/воина/воины = warrior/war
+маг/мага/магу/маги/магов = mage
+жрец/прист/приста/присты = priest
+разбойник/рога/роги/рогу = rogue
+друид/друля/дру = druid/dru
+шаман/шам/шама/шамы = shaman/sham
+паладин/паладина/паладины/паладином = paladin/pally
+охотник/хант/ханта/ханты = hunter
+чернокнижник/варлок/варлока/варлоки = warlock/lock
+рыцарь смерти/дк = death knight/DK
+# Подземелья и рейды
+Огненная пропасть = Ragefire Chasm/RFC
+Тюрьма/Стоки = Stockade/Stocks
+Гномреган/Гномер = Gnomeregan/Gnomer
+РФК/Лабиринты Иглошкурых = Razorfen Kraul/RFK
+РФД/Курганы Иглошкурых = Razorfen Downs/RFD
+Монастырь/СМ = Scarlet Monastery/SM
+Кладбище = Graveyard/GY
+Библиотека/Библа = Library/Lib
+Оружейная = Armory/Arm
+Собор = Cathedral/Cath
+Ульдаман/Ульда = Uldaman/Ulda
+ЗФ/Зул'Фаррак = Zul'Farrak/ZF
+Мародон/Мара = Maraudon/Mara
+Затонувший храм/Храм = Sunken Temple/ST
+БРД/Глубины Чёрной горы = Blackrock Depths/BRD
+ЛБРС/Нижний пик = LBRS
+УБРС/Верхний пик = UBRS
+Стратхольм/Страт = Stratholme/Strat
+Некроситет/Шоло = Scholomance/Scholo
+Забытый город/Диремаул = Dire Maul
+МК/Огненные недра = Molten Core/MC
+Ониксия/Оня/Ониксии = Onyxia/Ony
+БВЛ/Логово Крыла Тьмы = Blackwing Lair/BWL
+ЗГ/Зул'Гуруб = Zul'Gurub/ZG
+АК20 = AQ20
+АК40 = AQ40
+Наксрамас/Накс = Naxxramas/Naxx
+ЦЛК/Цитадель Ледяной Короны = ICC
+Испытание крестоносца = ToC
+Ульдуар = Ulduar/Uld
+# Группа и бой
+лфг = LFG
+лфм = LFM
 ищу/ищем = LF
 ищем ещё одного = LF1M
 ищем ещё двоих = LF2M
+ищем ещё троих = LF3M
+кик/кикни/кикнуть -> kick
+моб/мобы/мобов/мобом = mob/mobs
+пулл/пулить/пульни = pull
+сплит -> split
+лут/лутать/лутаю = loot
+дроп/дропнулся/дропнулось -> drop
+нид/нидаю -> need
+грид/гридаю -> greed
+ролл/роллить/ролю -> roll
+мастер лут/мл = master loot/ML
+ресни/реснуть/ресать -> res
+соулстоун/камень души = soulstone/SS
+призыв/суммон/саммон/суммонить = summon
+камень встречи = meeting stone
+портал/порталы/порт -> portal
+хс/камень возвращения = hearthstone/HS
+кайт/кайтить = kite
+застанил/застанить/застань -> stun
+сапни/сапнуть -> sap
+овца/овцу/овечка/шип -> sheep
+шеклы -> shackle
+трап/ловушка -> trap
+сайленс/молчанка -> silence
+дисп/диспел/диспельни/диспелить = dispel
+сбить каст/сбей каст -> interrupt
+контроль -> CC
+АОЕ/аое/аоешка = AoE
+рдд = ranged dps
+мдд = melee dps
+кд = cooldown
+бос/босс/боса/босса = boss
+трэш/треш = trash
+ласт = last
+питомец/питомца/петы = pet
+тотем/тотемы = totem
+маунт/маунта = mount
+# Персонаж и предметы
+лвл/лвла = lvl/level
+квест/квеста/квесты/квестов = quest
+спек/спека/спеки = spec
+шмот/шмотки/шмота = gear
+голд/голда/голды = gold/g
+репа/репутация = rep/reputation
+крафт/крафтить = craft
+аук/аукцион/аукциона = AH/auction house
+гильдия/ги/гильда/гильду = guild
+гильдмастер = GM
+офицер = officer
+# Чат
 куплю = WTB
 продам = WTS
-спасибо = ty/thx
-поздравляю = gz/grats
-отошёл = afk
+обменяю = WTT
+спасибо/спс/пасиб = ty/thx
+пожалуйста/плиз/пж = pls/please
+поздравляю/грац = gz/grats
+отошёл/афк = afk
 сейчас вернусь = brb
 не за что = np
+гг = gg
+хорошо сыграли/вп = wp
+гл = gl
+веселитесь/хф = hf
+хз -> idk
+го/погнали -> go
+рч/проверка готовности = ready check/rc
 
 # ===== Overwatch: герои (официальные русские имена и прозвища) =====
 # Танки
@@ -858,9 +964,15 @@ def set_glossary(text):
     ru2en, en2ru, protect, stems = [], [], set(), set()
     for line in (text or "").splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#"):
             continue
-        ru, en = [x.strip() for x in line.split("=", 1)]
+        one_way = "->" in line
+        if one_way:
+            ru, en = [x.strip() for x in line.split("->", 1)]
+        elif "=" in line:
+            ru, en = [x.strip() for x in line.split("=", 1)]
+        else:
+            continue
         ru_forms = [f.strip() for f in ru.split("/") if f.strip()]
         en_forms = [f.strip() for f in en.split("/") if f.strip()]
         if not ru_forms or not en_forms:
@@ -870,7 +982,7 @@ def set_glossary(text):
             st = _ru_stem(f)
             if st:
                 stems.add(st)
-        for f in en_forms:
+        for f in ([] if one_way else en_forms):
             en2ru.append((re.compile(_pattern(f, "en"), re.IGNORECASE), ru_forms[0], len(f)))
         for f in ru_forms + en_forms:
             for w in f.split():
@@ -878,6 +990,18 @@ def set_glossary(text):
     ru2en.sort(key=lambda x: -x[2])   # длинные фразы — первыми
     en2ru.sort(key=lambda x: -x[2])
     _GLOSSARY.update(ru2en=ru2en, en2ru=en2ru, protect=protect, stems=stems)
+
+
+def glossary_missing(user_text):
+    """Строки стандартного словаря, которых нет в словаре пользователя (по русской части)."""
+    def key(line):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            return None
+        sep = "->" if "->" in line else "=" if "=" in line else None
+        return line.split(sep, 1)[0].strip().lower() if sep else None
+    have = {key(l) for l in (user_text or "").splitlines()} - {None}
+    return [l for l in DEFAULT_GLOSSARY.splitlines() if key(l) and key(l) not in have]
 
 
 def is_protected(word):

@@ -1084,6 +1084,19 @@ class App(ctk.CTk):
                       fg_color="transparent", hover_color=BORDER, border_width=1, border_color=BORDER,
                       text_color=MUTED, command=reset).pack(side="left")
 
+        def add_new():
+            new = core.glossary_missing(box.get("1.0", "end"))
+            if not new:
+                self.set_status("Новых слов в стандартном словаре нет", GREEN)
+                return
+            box.insert("end", "\n# ===== Добавлено из стандартного словаря =====\n" + "\n".join(new) + "\n")
+            box.see("end")
+            self.set_status(f"Добавлено строк: {len(new)} — нажми «Сохранить»", GREEN)
+
+        ctk.CTkButton(br, text="Добавить новые", width=130, height=32, font=(FONT, 12),
+                      fg_color="transparent", hover_color=BORDER, border_width=1, border_color=GOLD,
+                      text_color=GOLD, command=add_new).pack(side="left", padx=(8, 0))
+
     def on_toast_toggle(self):
         self.settings["toast"] = bool(self.toast_switch.get())
         save_settings(self.settings)
