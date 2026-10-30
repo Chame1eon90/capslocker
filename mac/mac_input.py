@@ -77,7 +77,12 @@ def _post(ev):
     CGEventPost(kCGHIDEventTap, ev)
 
 
+ARROW_FLAGS = 0x200000 | 0x800000   # kCGEventFlagMaskNumericPad | kCGEventFlagMaskSecondaryFn
+
+
 def key(code, flags=0):
+    if code in (VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, 115, 119):  # стрелки, Home, End
+        flags |= ARROW_FLAGS
     for down in (True, False):
         ev = CGEventCreateKeyboardEvent(None, code, down)
         CGEventSetFlags(ev, flags)
@@ -119,18 +124,51 @@ def wait_mods_released(timeout=1.0):
 
 
 # ------------------------------------------------------------------ буфер обмена
+# Прямой доступ к буферу macOS. Команды pbcopy/pbpaste не годятся: при запуске из Finder
+# у программы нет настроек языка, и они портят русские буквы.
+def _pb():
+    from AppKit import NSPasteboard
+    return NSPasteboard.generalPasteboard()
+
+
 def get_clipboard():
     try:
-        return subprocess.run(["pbpaste"], capture_output=True, timeout=2).stdout.decode("utf-8", "replace")
+        from AppKit import NSPasteboardTypeString
+        s = _pb().stringForType_(NSPasteboardTypeString)
+        return str(s) if s is not None else ""
     except Exception:
+        log("get_clipboard: " + traceback.format_exc())
         return None
 
 
 def set_clipboard(text):
     try:
-        subprocess.run(["pbcopy"], input=(text or "").encode("utf-8"), timeout=2)
+        from AppKit import NSPasteboardTypeString
+        pb = _pb()
+        pb.clearContents()
+        pb.setString_forType_(text or "", NSPasteboardTypeString)
     except Exception:
-        pass
+        log("set_clipboard: " + traceback.format_exc())
+
+
+def clip_count():
+    try:
+        return int(_pb().changeCount())
+    except Exception:
+        return -1
+
+
+def copy_selection(timeout=0.8):
+    """⌘C и ждём, пока буфер действительно изменится. Возвращает текст или None."""
+    before = clip_count()
+    cmd(VK_C)
+    end = time.time() + timeout
+    while time.time() < end:
+        time.sleep(0.03)
+        if clip_count() != before:
+            time.sleep(0.02)
+            return get_clipboard()
+    return None
 
 
 # ------------------------------------------------------------------ раскладки (Text Input Sources)
@@ -557,6 +595,7 @@ class MacInput:
             self.on_event("undo", "")
             return
         n = self._segment() if app == self.buf_app else 0
+        log(f"caps: набрано {n} клавиш, раскладка будет определена")
         if n == 0:
             if self._fix_existing(app):
                 return
@@ -578,27 +617,24 @@ class MacInput:
         self.on_event("fix", f"{len(keys)} симв.")
 
     def _fix_existing(self, app):
-        """Фраза была в поле раньше — берём текст строки до курсора (⌘⇧←)."""
-        clip_quiet()
+        """Фраза была в поле раньше — выделяем строку до курсора и переделываем её."""
+        clip_quiet(3)
         wait_mods_released()
         saved = get_clipboard()
-        marker = "⁣capslocker⁣"
-        set_clipboard(marker)
-        key(VK_LEFT, kCGEventFlagMaskCommand | kCGEventFlagMaskShift)
-        time.sleep(0.03)
-        cmd(VK_C)
-        text = marker
-        for _ in range(20):
-            time.sleep(0.03)
-            text = get_clipboard()
-            if text != marker:
+        text = None
+        # 1) ⌘⇧← — выделить до начала строки (так работает почти везде в macOS)
+        # 2) ⇧Home — запасной вариант для некоторых программ и игр
+        for how, (code, flags) in (("cmd+shift+left", (VK_LEFT, kCGEventFlagMaskCommand | kCGEventFlagMaskShift)),
+                                   ("shift+home", (115, kCGEventFlagMaskShift))):
+            key(code, flags)
+            time.sleep(0.04)
+            text = copy_selection()
+            log(f"fix_existing: {how} -> {'ничего' if text is None else str(len(text)) + ' симв.'}")
+            if text:
                 break
         if saved is not None:
-            threading.Thread(target=lambda: (time.sleep(0.4), set_clipboard(saved)), daemon=True).start()
-        if text == marker or not text:
-            if text != marker:
-                return False
-            key(VK_RIGHT)
+            threading.Thread(target=lambda: (time.sleep(0.5), set_clipboard(saved)), daemon=True).start()
+        if not text:
             return False
         if "\n" in text or len(text) > 500:
             key(VK_RIGHT)
@@ -614,10 +650,11 @@ class MacInput:
             seg = text.lstrip(" ")
         prefix = text[:len(text) - len(seg)]
         new, tgt = convert_text(seg)
+        log(f"fix_existing: язык {tgt}, менять {'нечего' if (tgt is None or new == seg) else 'да'}")
         if tgt is None or new == seg:
             key(VK_RIGHT)
             return False
-        type_text(prefix + new)
+        type_text(prefix + new)   # печать поверх выделения заменяет его
         self._switch(tgt)
         self.reset()
         self.last_fix = {"app": app, "n": len(new), "src": "ru" if tgt == "en" else "en", "old": seg}
@@ -625,21 +662,12 @@ class MacInput:
         return True
 
     def _convert_selection(self):
-        clip_quiet()
+        clip_quiet(3)
         wait_mods_released(1.5)
         saved = get_clipboard()
-        marker = "⁣capslocker⁣"
-        set_clipboard(marker)
-        cmd(VK_C)
-        text = marker
-        for _ in range(25):
-            time.sleep(0.02)
-            text = get_clipboard()
-            if text != marker:
-                break
-        if not text or text == marker:
-            if saved is not None:
-                set_clipboard(saved)
+        text = copy_selection()
+        log(f"selection: {'ничего' if not text else str(len(text)) + ' симв.'}")
+        if not text:
             self._fix()
             return
         new, tgt = convert_text(text)
@@ -653,4 +681,4 @@ class MacInput:
         self.reset()
         self.on_event("selection", new[:40])
         if saved is not None:
-            threading.Thread(target=lambda: (time.sleep(0.5), set_clipboard(saved)), daemon=True).start()
+            threading.Thread(target=lambda: (time.sleep(0.6), set_clipboard(saved)), daemon=True).start()

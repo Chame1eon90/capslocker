@@ -911,15 +911,13 @@ class App(ctk.CTk):
 
     # ================================================================ буфер обмена
     def _copy(self, text):
-        import pyperclip
         self.own_clip.add(text)
         if len(self.own_clip) > 60:
             self.own_clip = {text}
-        pyperclip.copy(text)
+        mac_input.set_clipboard(text)
 
     def _clip(self):
-        import pyperclip
-        return pyperclip.paste()
+        return mac_input.get_clipboard()
 
     def _warn_length(self, text):
         if len(text) > WOW_CHAT_LIMIT:
