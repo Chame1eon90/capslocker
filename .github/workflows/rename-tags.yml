@@ -1,0 +1,40 @@
+name: Порядок сборок (переименование тегов)
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/rename-tags.yml"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  rename:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: build-9 → build-009, mac-build-7 → build-000-mac-7
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch --tags --force
+          for old in $(git tag -l 'build-*' 'mac-build-*'); do
+            case "$old" in
+              mac-build-*) new="build-000-mac-${old#mac-build-}" ;;
+              build-*)     n="${old#build-}"; [[ "$n" =~ ^[0-9]+$ ]] || continue
+                           new="build-$(printf '%03d' "$((10#$n))")" ;;
+            esac
+            [ "$old" = "$new" ] && continue
+            sha=$(git rev-list -n1 "$old")
+            git tag -f "$new" "$sha"
+            git push -f origin "refs/tags/$new"
+            if gh release edit "$old" --tag "$new" --repo "${{ github.repository }}" >/dev/null; then
+              git push origin ":refs/tags/$old"
+              echo "$old → $new"
+            else
+              echo "::warning::не удалось переименовать $old"
+            fi
+          done

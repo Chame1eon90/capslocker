@@ -104,7 +104,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="build-${{ github.run_number }}"
+          TAG="build-$(printf '%03d' ${{ github.run_number }})"
           # «Что нового»: из .github/release-notes.json, если там есть эта сборка, иначе — список изменений с прошлой сборки
           PYBIN=$(command -v python3 || command -v python)
           "$PYBIN" - "$TAG" > notes.md <<'PY'
@@ -242,7 +242,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          TAG="build-${{ github.run_number }}"
+          TAG="build-$(printf '%03d' ${{ github.run_number }})"
           # «Что нового»: из .github/release-notes.json, если там есть эта сборка, иначе — список изменений с прошлой сборки
           PYBIN=$(command -v python3 || command -v python)
           "$PYBIN" - "$TAG" > notes.md <<'PY'
