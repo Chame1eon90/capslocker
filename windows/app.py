@@ -137,6 +137,7 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
 
         self._build()
+        self._apply_dimming()
         self.after(100, self._poll_queue)
         self._setup_hotkey()
         self.refresh_models()
@@ -198,6 +199,7 @@ class App(ctk.CTk):
             self.spell_en_sw.select()
         mode_row = ctk.CTkFrame(self.tab_tr, fg_color="transparent")
         mode_row.pack(fill="x", padx=18, pady=(4, 10))
+        self._g_mode = mode_row
         self.mode_map = {"Авто": "auto", "Онлайн": "online", "Офлайн": "offline"}
         rev = {v: k for k, v in self.mode_map.items()}
         self.mode_seg = ctk.CTkSegmentedButton(
@@ -232,7 +234,7 @@ class App(ctk.CTk):
             self.fallback_switch.select()
 
         # ---- мои сообщения
-        mine = Card(self.tab_tr, "Мои сообщения", "RU → EN")
+        mine = self._g_mine = Card(self.tab_tr, "Мои сообщения", "RU → EN")
         mine.pack(fill="x", padx=18, pady=6)
         row = ctk.CTkFrame(mine.body, fg_color="transparent")
         row.pack(fill="x")
@@ -261,16 +263,18 @@ class App(ctk.CTk):
         self.punct_sw.pack(anchor="w", pady=(6, 0))
         if self.settings.get("spell_punct", False):
             self.punct_sw.select()
-        ctk.CTkLabel(mine.body, text="Пунктуацию — только в программах (через запятую, например: telegram):",
-                     font=(FONT, 10), text_color=MUTED).pack(anchor="w", pady=(6, 2))
+        self._punct_lbl = ctk.CTkLabel(mine.body, text="Пунктуацию — только в программах (через запятую, например: telegram):",
+                                       font=(FONT, 10), text_color=MUTED)
+        self._punct_lbl.pack(anchor="w", pady=(6, 2))
         pr = ctk.CTkFrame(mine.body, fg_color="transparent")
         pr.pack(fill="x")
         self.punct_ex = ctk.CTkEntry(pr, height=28, font=(FONT, 12), fg_color=CARD_2, border_color=BORDER,
                                      text_color=TEXT, placeholder_text="пусто — во всех программах")
         self.punct_ex.pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(pr, text="Выбрать…", width=84, height=28, font=(FONT, 12), fg_color="transparent",
-                      hover_color=BORDER, border_width=1, border_color=BORDER, text_color=GOLD,
-                      command=self.on_pick_punct_app).pack(side="left", padx=(6, 0))
+        self._punct_pick = ctk.CTkButton(pr, text="Выбрать…", width=84, height=28, font=(FONT, 12),
+                                         fg_color="transparent", hover_color=BORDER, border_width=1,
+                                         border_color=BORDER, text_color=GOLD, command=self.on_pick_punct_app)
+        self._punct_pick.pack(side="left", padx=(6, 0))
         if self.settings.get("punct_only"):
             self.punct_ex.insert(0, self.settings["punct_only"])
         self.punct_ex.bind("<FocusOut>", lambda e: self.on_punct_exclude())
@@ -293,7 +297,7 @@ class App(ctk.CTk):
             self.send_switch.select()
 
         # ---- ручной перевод
-        manual = Card(self.tab_tr, "Быстрый перевод", "RU ⇄ EN")
+        manual = self._g_manual = Card(self.tab_tr, "Быстрый перевод", "RU ⇄ EN")
         manual.pack(fill="x", padx=18, pady=6)
         in_row = ctk.CTkFrame(manual.body, fg_color="transparent")
         in_row.pack(fill="x")
@@ -303,12 +307,14 @@ class App(ctk.CTk):
         self.entry.bind("<Return>", lambda e: self.on_manual())
         self.entry.bind("<Control-KeyPress>", self._entry_ctrl_key)
         self.entry.bind("<Shift-Insert>", self._entry_paste)
-        ctk.CTkButton(in_row, text="Ошибки", width=74, height=38, font=(FONT, 13),
-                      fg_color=CARD_2, hover_color=BORDER, border_width=1, border_color=GOLD, text_color=GOLD,
-                      command=self.on_manual_spell).pack(side="left", padx=(8, 0))
-        ctk.CTkButton(in_row, text="Перевести", width=100, height=38, font=(FONT, 13, "bold"),
-                      fg_color=GOLD, hover_color=GOLD_HOVER, text_color=BG,
-                      command=self.on_manual).pack(side="left", padx=(8, 0))
+        self._spell_manual_btn = ctk.CTkButton(in_row, text="Ошибки", width=74, height=38, font=(FONT, 13),
+                                               fg_color=CARD_2, hover_color=BORDER, border_width=1,
+                                               border_color=GOLD, text_color=GOLD, command=self.on_manual_spell)
+        self._spell_manual_btn.pack(side="left", padx=(8, 0))
+        self._tr_manual_btn = ctk.CTkButton(in_row, text="Перевести", width=100, height=38, font=(FONT, 13, "bold"),
+                                            fg_color=GOLD, hover_color=GOLD_HOVER, text_color=BG,
+                                            command=self.on_manual)
+        self._tr_manual_btn.pack(side="left", padx=(8, 0))
         ctk.CTkLabel(manual.body, text="Перевод сразу скопируется — останется нажать Ctrl+V",
                      font=(FONT, 10), text_color=MUTED).pack(anchor="w", pady=(6, 0))
 
@@ -375,7 +381,7 @@ class App(ctk.CTk):
         self.status.pack(fill="x", padx=16, pady=(6, 10))
 
         # ---- история / входящие
-        hist = Card(self.tab_tr, "История и входящие", "EN → RU")
+        hist = self._g_hist = Card(self.tab_tr, "История и входящие", "EN → RU")
         hist.pack(fill="both", expand=True, padx=18, pady=6)
         top = ctk.CTkFrame(hist.body, fg_color="transparent")
         top.pack(fill="x", pady=(0, 6))
@@ -507,7 +513,7 @@ class App(ctk.CTk):
 
     # ================================================================ вкладка «Раскладка»
     def _build_caps(self, P):
-        how = Card(P, "Исправление раскладки по CapsLock")
+        how = self._g_caps_how = Card(P, "Исправление раскладки по CapsLock")
         how.pack(fill="x", padx=18, pady=6)
         top = ctk.CTkFrame(how.body, fg_color="transparent")
         top.pack(fill="x", pady=(0, 6))
@@ -530,14 +536,14 @@ class App(ctk.CTk):
             ctk.CTkLabel(r, text=txt, font=(FONT, 12), text_color=TEXT, justify="left", anchor="w",
                          wraplength=330).pack(side="left", padx=10, fill="x")
 
-        tr = Card(P, "Попробуй здесь")
+        tr = self._g_caps_try = Card(P, "Попробуй здесь")
         tr.pack(fill="x", padx=18, pady=6)
         ctk.CTkLabel(tr.body, text="Набери «ghbdtn rfr ltkf» в английской раскладке и нажми CapsLock",
                      font=(FONT, 11), text_color=MUTED).pack(anchor="w")
         ctk.CTkEntry(tr.body, height=36, font=(FONT, 14), fg_color=CARD_2, border_color=BORDER,
                      text_color=TEXT).pack(fill="x", pady=(6, 0))
 
-        st = Card(P, "Настройки")
+        st = self._g_caps_set = Card(P, "Настройки")
         st.pack(fill="x", padx=18, pady=6)
         sr = ctk.CTkFrame(st.body, fg_color="transparent")
         sr.pack(fill="x", pady=(0, 6))
@@ -589,6 +595,7 @@ class App(ctk.CTk):
     def on_caps_enabled(self):
         self.caps_settings["enabled"] = bool(self.caps_sw.get())
         save_settings(self.settings)
+        self._apply_dimming()
         self.caps_status_set("Включено" if self.caps_settings["enabled"]
                              else "Выключено — CapsLock работает как обычно",
                              GREEN if self.caps_settings["enabled"] else MUTED)
@@ -924,6 +931,7 @@ class App(ctk.CTk):
     def on_punct(self):
         self.settings["spell_punct"] = bool(self.punct_sw.get())
         save_settings(self.settings)
+        self._apply_dimming()
         self.set_status("Пунктуация тоже проверяется" if self.settings["spell_punct"]
                         else "Проверяется только орфография", GREEN)
 
@@ -1120,6 +1128,83 @@ class App(ctk.CTk):
             t.after(min(14000, 4500 + 70 * len(translated)), lambda: t.winfo_exists() and t.destroy())
         except Exception:
             log("toast: " + traceback.format_exc())
+    # ---------- затемнение выключенных функций
+    DIM = "#5a5e6b"
+
+    DIM_PROPS = {
+        "CTkLabel": ("text_color", "fg_color"),
+        "CTkButton": ("text_color", "border_color", "fg_color"),
+        "CTkSwitch": ("progress_color", "text_color"),
+        "CTkSegmentedButton": ("selected_color", "selected_hover_color", "text_color"),
+        "CTkEntry": ("text_color", "border_color"),
+        "CTkSlider": ("progress_color", "button_color"),
+        "CTkOptionMenu": ("text_color",),
+    }
+
+    def _dim(self, w, on, keep=()):
+        """Сделать виджет (и всё внутри рамок) активным/серым. keep — что не трогать."""
+        if w in keep:
+            return
+        kind = type(w).__name__
+        if kind in self.DIM_PROPS or isinstance(w, ctk.CTkLabel):
+            props = self.DIM_PROPS.get(kind, self.DIM_PROPS["CTkLabel"])
+            if not hasattr(w, "_orig_colors"):
+                w._orig_colors = {}
+                for p in props:
+                    try:
+                        w._orig_colors[p] = w.cget(p)
+                    except Exception:
+                        pass
+            for p, orig in w._orig_colors.items():
+                if on:
+                    val = orig
+                elif p == "fg_color":
+                    val = orig if orig == "transparent" else "#30343f"
+                elif p == "text_color" and kind == "CTkButton" and w._orig_colors.get("fg_color") not in (None, "transparent"):
+                    val = "#7d818d"
+                else:
+                    val = self.DIM
+                try:
+                    w.configure(**{p: val})
+                except Exception:
+                    pass
+            if not isinstance(w, ctk.CTkLabel):
+                try:
+                    w.configure(state="normal" if on else "disabled")
+                except Exception:
+                    pass
+            return
+        if isinstance(w, ctk.CTkFrame):          # рамки и карточки — идём внутрь
+            for ch in w.winfo_children():
+                self._dim(ch, on, keep)
+            return
+        try:
+            w.configure(state="normal" if on else "disabled")
+        except Exception:
+            pass
+    def _apply_dimming(self):
+        tr = self.settings.get("tr_enabled", True)
+        sp = self.settings.get("spell_enabled", True)
+        punct_ws = [self._punct_lbl, self.punct_ex, self._punct_pick]
+        spell_ws = [self.spell_btn, self.spell_sw, self.punct_sw, self._spell_manual_btn] + punct_ws
+        tr_only = [self._g_mode, self._g_hist, self.key_btn, self.send_switch, self._tr_manual_btn]
+        # карточка «Мои сообщения» и поле быстрого перевода общие: гаснут, только если выключено всё
+        for card in (self._g_mine, self._g_manual):
+            self._dim(card, tr or sp, keep=tuple(spell_ws + tr_only))
+        for wdg in tr_only:
+            self._dim(wdg, tr)
+        for wdg in spell_ws:
+            self._dim(wdg, sp)
+        # «исправлять перед переводом» имеет смысл, только если включено и то и другое
+        self._dim(self.spell_sw, tr and sp)
+        # список программ для пунктуации — только когда пунктуация включена
+        for wdg in punct_ws:
+            self._dim(wdg, sp and self.settings.get("spell_punct", False))
+        # вкладка «Раскладка»: всё, кроме переключателя «Включено»
+        caps = self.caps_settings.get("enabled", True)
+        for card in (self._g_caps_how, self._g_caps_try, self._g_caps_set):
+            self._dim(card, caps, keep=(self.caps_sw,))
+
     def on_feature(self, key, sw):
         on = bool(sw.get())
         self.settings[key] = on
@@ -1129,6 +1214,7 @@ class App(ctk.CTk):
             self._update_tray()
         except Exception:
             pass
+        self._apply_dimming()
         name = "Перевод" if key == "tr_enabled" else "Проверка ошибок"
         self.set_status(f"{name}: {'включено' if on else 'выключено'}", GREEN if on else MUTED)
 
