@@ -38,9 +38,17 @@ def _num(tag):
 
 def latest(timeout=10):
     """Последняя сборка для этой системы: (номер, ссылка на архив, размер) или None."""
-    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases?per_page=15", headers=UA)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        releases = json.loads(r.read().decode("utf-8"))
+    # GitHub сортирует релизы по названию как по тексту («build-9» раньше «build-10»),
+    # поэтому берём весь список (до 3 страниц) и сравниваем номера как числа
+    releases = []
+    for page in (1, 2, 3):
+        req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}",
+                                     headers=UA)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            chunk = json.loads(r.read().decode("utf-8"))
+        releases += chunk
+        if len(chunk) < 100:
+            break
     want = asset_name()
     best = None
     for rel in releases:
