@@ -300,7 +300,8 @@ class App(ctk.CTk):
 
         self.model_rows = {}
         for key, title, sub in (("fast", "Быстрая · Argos", "~200 МБ, мгновенно"),
-                                ("quality", "Качественная · Tencent HY-MT", "~1,1 ГБ, точнее, медленнее")):
+                                ("quality", "Качественная · Tencent HY-MT", "~1,1 ГБ, точнее, медленнее"),
+                                ("sage", "Проверка ошибок · SAGE (Сбер)", "~100 МБ, русский: опечатки и запятые")):
             r = ctk.CTkFrame(foot, fg_color="transparent")
             r.pack(fill="x", padx=16, pady=2)
             dot = ctk.CTkLabel(r, text="●", font=(FONT, 14), text_color=RED, width=14)
@@ -727,9 +728,10 @@ class App(ctk.CTk):
         self.set_status("Скопировано — Ctrl+V", GREEN)
 
     def refresh_models(self):
-        ready = {"fast": self.engine.fast_ready(), "quality": self.engine.hymt.is_installed()}
+        ready = {"fast": self.engine.fast_ready(), "quality": self.engine.hymt.is_installed(),
+                 "sage": self.engine.offline_speller.sage_installed()}
         for key, (dot, lab, btn, sub) in self.model_rows.items():
-            active = key == self.engine.offline_engine
+            active = key == self.engine.offline_engine or key == "sage"
             if ready[key]:
                 dot.configure(text_color=GREEN if active else MUTED)
                 lab.configure(text=("установлена · используется" if active else "установлена"))
@@ -997,6 +999,15 @@ class App(ctk.CTk):
             done = []
             for p in paths:
                 name = os.path.basename(p).lower()
+                if "sage" in name and name.endswith(".zip"):
+                    try:
+                        self.set_status("Устанавливаю модель проверки ошибок…", BLUE)
+                        self.engine.offline_speller.install_from_file(p)
+                        done.append("SAGE")
+                    except Exception as e:
+                        log("install sage failed: " + traceback.format_exc())
+                        self.ui("error", f"Не удалось установить {os.path.basename(p)}:\n{e}")
+                    continue
                 if name.endswith(".gguf"):
                     try:
                         def prog(pct, msg):
@@ -1038,7 +1049,14 @@ class App(ctk.CTk):
 
         def work():
             try:
-                if which == "quality":
+                if which == "sage":
+                    def prog(pct, msg):
+                        if pct >= 0:
+                            self.ui("progress", pct / 100)
+                        self.set_status(msg + (f" ({pct}%)" if pct >= 0 else ""), BLUE)
+                    self.engine.offline_speller.download(prog, "Модель SAGE")
+                    self.set_status("Офлайн-проверка ошибок готова ✔", GREEN)
+                elif which == "quality":
                     def prog(pct, msg):
                         if pct >= 0:
                             self.ui("progress", pct / 100)
@@ -1058,7 +1076,12 @@ class App(ctk.CTk):
             except Exception as e:
                 log("download failed: " + traceback.format_exc())
                 self.set_status("Не удалось скачать модель", RED)
-                if which == "quality":
+                if which == "sage":
+                    self.ui("error", "Не удалось скачать модель проверки ошибок:\n%s\n\n"
+                                     "Попробуй ещё раз позже или скачай файл sage-ru-ct2-int8.zip вручную:\n"
+                                     "github.com/Chame1eon90/capslocker/releases/tag/models\n"
+                                     "и нажми «Из файла»." % e)
+                elif which == "quality":
                     self.ui("error", "Не удалось скачать модель:\n%s\n\n"
                                      "Варианты:\n"
                                      "• включи VPN и нажми «Скачать» ещё раз (докачает с того же места);\n"

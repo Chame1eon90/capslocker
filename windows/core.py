@@ -806,10 +806,182 @@ class SpellChecker:
         return fixed, n, name
 
 
+# ---------------------------------------------------------------- офлайн-проверка ошибок
+
+SAGE_URL = "https://github.com/Chame1eon90/capslocker/releases/download/models/sage-ru-ct2-int8.zip"
+WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё]+(?:[-'][A-Za-zА-Яа-яЁё]+)*")
+
+
+def _match_case(src, word):
+    if src.isupper() and len(src) > 1:
+        return word.upper()
+    if src[:1].isupper():
+        return word[:1].upper() + word[1:]
+    return word.lower() if src.islower() else word
+
+
+class OfflineSpeller:
+    """Без интернета: русский — модель SAGE (Сбер, по желанию скачивается),
+    без неё и для английского — словари pyspellchecker (встроены)."""
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "sage_ru")
+        self._lock = threading.Lock()
+        self._tr = None
+        self._tok = None
+        self._prefix = ""
+        self._dicts = {}
+
+    # ---- модель SAGE
+    def sage_installed(self):
+        return all(os.path.exists(os.path.join(self.dir, f)) for f in ("model.bin", "tokenizer.json"))
+
+    def install_from_file(self, path):
+        tmp = self.dir + "_tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        with zipfile.ZipFile(path) as z:
+            z.extractall(tmp)
+        src = tmp
+        for root, dirs, files in os.walk(tmp):
+            if "model.bin" in files:
+                src = root
+                break
+        if not os.path.exists(os.path.join(src, "model.bin")):
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise RuntimeError("Это не файл модели проверки ошибок.")
+        self.unload()
+        shutil.rmtree(self.dir, ignore_errors=True)
+        shutil.move(src, self.dir)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    def download(self, progress=lambda pct, msg: None, label="Модель SAGE"):
+        tmp = os.path.join(DATA_DIR, "download_sage.zip")
+        progress(-1, f"{label}: подключаюсь к github.com…")
+        OfflineModel._fetch(None, SAGE_URL, tmp, progress, label)
+        progress(-1, f"{label}: распаковываю…")
+        try:
+            self.install_from_file(tmp)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+    def loaded(self):
+        return self._tr is not None or bool(self._dicts)
+
+    def unload(self):
+        with self._lock:
+            self._tr = None
+            self._tok = None
+            self._dicts = {}
+
+    def _load_sage(self):
+        if self._tr is not None:
+            return
+        import ctranslate2
+        import tokenizers
+        try:
+            cfg = json.load(open(os.path.join(self.dir, "sage_config.json"), encoding="utf-8"))
+            self._prefix = cfg.get("prefix", "")
+        except Exception:
+            self._prefix = ""
+        threads = max(1, min(4, (os.cpu_count() or 2)))
+        self._tr = ctranslate2.Translator(self.dir, device="cpu", compute_type="int8", intra_threads=threads)
+        self._tok = tokenizers.Tokenizer.from_file(os.path.join(self.dir, "tokenizer.json"))
+
+    def _sage(self, text):
+        toks = self._tok.encode(self._prefix + text).tokens
+        res = self._tr.translate_batch([toks], beam_size=1, max_decoding_length=int(len(toks) * 1.5) + 8)
+        ids = [self._tok.token_to_id(t) for t in res[0].hypotheses[0]]
+        return self._tok.decode([i for i in ids if i is not None], skip_special_tokens=True).strip()
+
+    # ---- словари
+    def _dict(self, lang):
+        if lang not in self._dicts:
+            from spellchecker import SpellChecker as _SC
+            self._dicts[lang] = _SC(language=lang, distance=2)
+        return self._dicts[lang]
+
+    def _dict_fix(self, text):
+        out, n, pos = [], 0, 0
+        for m in WORD_RE.finditer(text):
+            w = m.group(0)
+            lang = "ru" if CYR.search(w) else "en"
+            sc = self._dict(lang)
+            fixed = w
+            if len(w) > 2 and not sc.known([w.lower()]):
+                cand = sc.correction(w.lower())
+                if cand and cand != w.lower():
+                    fixed = _match_case(w, cand)
+            out.append(text[pos:m.start()])
+            out.append(fixed)
+            n += fixed != w
+            pos = m.end()
+        out.append(text[pos:])
+        return "".join(out), n
+
+    @staticmethod
+    def _merge(orig, model_out, punctuation):
+        """Берём из ответа модели исправленные слова (и знаки — если нужна пунктуация),
+        но регистр букв оставляем как у пользователя."""
+        import difflib
+        a = re.findall(r"\w+|[^\w\s]+|\s+", orig)
+        b = re.findall(r"\w+|[^\w\s]+|\s+", model_out)
+        norm = lambda t: t.lower() if t.strip() else " "
+        sm = difflib.SequenceMatcher(a=[norm(t) for t in a], b=[norm(t) for t in b], autojunk=False)
+        res, n = [], 0
+        for op, i1, i2, j1, j2 in sm.get_opcodes():
+            if op == "equal":
+                res.extend(a[i1:i2])
+                continue
+            seg_a, seg_b = a[i1:i2], b[j1:j2]
+            words_a = [t for t in seg_a if re.match(r"\w", t)]
+            words_b = [t for t in seg_b if re.match(r"\w", t)]
+            if punctuation:
+                fixed = []
+                wi = 0
+                for t in seg_b:
+                    if re.match(r"\w", t):
+                        src = words_a[wi] if wi < len(words_a) else t
+                        fixed.append(_match_case(src, t) if len(words_a) == len(words_b) else t)
+                        wi += 1
+                    else:
+                        fixed.append(t)
+                res.extend(fixed)
+                n += 1
+            elif len(words_a) == len(words_b) and words_a:
+                # только слова: знаки и пробелы оставляем как были
+                wi = 0
+                for t in seg_a:
+                    if re.match(r"\w", t):
+                        res.append(_match_case(t, words_b[wi]))
+                        wi += 1
+                    else:
+                        res.append(t)
+                n += sum(1 for x, y in zip(words_a, words_b) if x.lower() != y.lower())
+            else:
+                res.extend(seg_a)
+        return "".join(res), n
+
+    def check(self, text, punctuation=False):
+        with self._lock:
+            if CYR.search(text) and self.sage_installed():
+                self._load_sage()
+                out = self._sage(text)
+                fixed, n = self._merge(text, out, punctuation)
+                # английские слова внутри русской фразы — словарём
+                if re.search(r"[A-Za-z]", fixed):
+                    fixed, n2 = self._dict_fix(fixed)
+                    n += n2
+                return fixed, n, "офлайн SAGE"
+            fixed, n = self._dict_fix(text)
+            return fixed, n, "офлайн словарь"
+
+
 class Engine:
     def __init__(self):
         self.online = OnlineTranslator()
         self.speller = SpellChecker()
+        self.offline_speller = OfflineSpeller()
         self.offline = {
             ("ru", "en"): OfflineModel("ru", "en"),
             ("en", "ru"): OfflineModel("en", "ru"),
@@ -826,7 +998,8 @@ class Engine:
         return self.hymt.is_installed() if self.offline_engine == "quality" else self.fast_ready()
 
     def models_loaded(self):
-        return self.hymt.loaded() or any(m.loaded() for m in self.offline.values())
+        return (self.hymt.loaded() or any(m.loaded() for m in self.offline.values())
+                or self.offline_speller.loaded())
 
     def unload_models(self):
         """Выгрузить все офлайн-модели из памяти. Возвращает True, если что-то было загружено."""
@@ -834,6 +1007,7 @@ class Engine:
         for m in self.offline.values():
             m.unload()
         self.hymt.unload()
+        self.offline_speller.unload()
         if was:
             import gc
             gc.collect()
@@ -877,7 +1051,18 @@ class Engine:
         m = WHISPER_CMD.match(text) or SLASH_CMD.match(text)
         if m:
             prefix, body = m.group(1), m.group(2)
-        fixed, n, how = self.speller.check(body, punctuation=punctuation)
+        if self.mode == "offline":
+            fixed, n, how = self.offline_speller.check(body, punctuation)
+        else:
+            try:
+                fixed, n, how = self.speller.check(body, punctuation=punctuation, timeout=3)
+            except Exception as e:
+                if self.mode == "online":
+                    raise
+                log(f"spell online failed, offline: {e!r}")
+                fixed, n, how = self.offline_speller.check(body, punctuation)
+                how += " (нет сети)"
+        self.last_offline_use = time.time() if how.startswith("офлайн") else self.last_offline_use
         return prefix + fixed, n, how
 
     def translate(self, text, direction=None):
