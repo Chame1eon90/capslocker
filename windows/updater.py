@@ -89,17 +89,46 @@ def install_and_restart(zip_path):
             with z.open(names[0]) as src, open(new_exe, "wb") as dst:
                 shutil.copyfileobj(src, dst)
         exe = sys.executable
+        logdir = os.path.join(os.environ.get("LOCALAPPDATA", work), "Capslocker")
+        os.makedirs(logdir, exist_ok=True)
+        ulog = os.path.join(logdir, "update.log")
 
         def q(p):
             return "'" + p.replace("'", "''") + "'"
-        ps = (f"$p={pid}; while (Get-Process -Id $p -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 300 }}; "
-              f"Start-Sleep -Milliseconds 800; "
-              f"for ($i=0; $i -lt 20; $i++) {{ try {{ Move-Item -LiteralPath {q(new_exe)} -Destination {q(exe)} -Force -ErrorAction Stop; break }} "
-              f"catch {{ Start-Sleep -Milliseconds 500 }} }}; "
-              f"Start-Process -FilePath {q(exe)}; Remove-Item -LiteralPath {q(work)} -Recurse -Force -ErrorAction SilentlyContinue")
+        # Ждём, пока файл программы освободится (у собранного exe два процесса — внешний
+        # освобождает файл чуть позже внутреннего), потом заменяем и запускаем новую версию.
+        ps = f"""
+$ErrorActionPreference = 'Continue'
+Start-Transcript -Path {q(ulog)} -Force | Out-Null
+$exe = {q(exe)}; $new = {q(new_exe)}
+Write-Output "Жду закрытия программы (pid {pid})"
+$deadline = (Get-Date).AddSeconds(90)
+while ((Get-Date) -lt $deadline) {{
+  $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -eq $exe }}
+  if (-not $busy) {{
+    try {{ Move-Item -LiteralPath $new -Destination $exe -Force -ErrorAction Stop; Write-Output "Файл заменён"; $ok = $true; break }}
+    catch {{ Write-Output ("Файл ещё занят: " + $_.Exception.Message) }}
+  }}
+  Start-Sleep -Milliseconds 500
+}}
+if (-not $ok) {{ Write-Output "Не удалось заменить файл за 90 секунд" }}
+Start-Sleep -Milliseconds 300
+Start-Process -FilePath $exe
+Write-Output "Программа запущена"
+Remove-Item -LiteralPath {q(work)} -Recurse -Force -ErrorAction SilentlyContinue
+Stop-Transcript | Out-Null
+"""
         enc = base64.b64encode(ps.encode("utf-16-le")).decode()
-        subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                          "-EncodedCommand", enc], creationflags=0x08000000 | 0x00000008, close_fds=True)
+        # отдельный независимый процесс: вне группы и задания программы, без окна
+        flags = 0x00000008 | 0x00000200 | 0x01000000 | 0x08000000
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW
+        args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                "-EncodedCommand", enc]
+        try:
+            subprocess.Popen(args, creationflags=flags, close_fds=True)
+        except OSError:
+            # если выход из «задания» запрещён — запускаем без этого флага
+            subprocess.Popen(args, creationflags=flags & ~0x01000000, close_fds=True)
     else:
         subprocess.run(["ditto", "-x", "-k", zip_path, work], check=True)
         new_app = os.path.join(work, "Capslocker.app")

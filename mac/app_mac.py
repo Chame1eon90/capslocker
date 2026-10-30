@@ -416,9 +416,13 @@ class App(ctk.CTk):
                 def prog(pct, msg):
                     self.set_status(f"{msg} ({pct}%)", BLUE)
                     self.ui("update_pct", pct)
+                log(f"update: качаю сборку {num}")
                 updater.download(url, dest, prog)
-                self.set_status("Устанавливаю обновление…", BLUE)
+                log(f"update: скачано {os.path.getsize(dest)} байт, запускаю замену")
+                self.set_status("Устанавливаю обновление — программа перезапустится…", BLUE)
                 updater.install_and_restart(dest)
+                log("update: выхожу, чтобы заменить файл")
+                time.sleep(0.5)
                 self.ui("quit")
             except Exception as e:
                 log("update failed: " + traceback.format_exc())
