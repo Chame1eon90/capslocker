@@ -1064,6 +1064,9 @@ class App(ctk.CTk):
 
     def _pick_app_into(self, entry, save_cb, what):
         from tkinter import filedialog
+        if sys.platform == "darwin":
+            self._pick_running_app(entry, save_cb, what)
+            return
         if sys.platform == "win32":
             path = filedialog.askopenfilename(title="Выбери программу (например, Wow.exe)",
                                               filetypes=[("Программы", "*.exe"), ("Все файлы", "*.*")])
@@ -1080,6 +1083,40 @@ class App(ctk.CTk):
         entry.insert(0, ", ".join(cur))
         save_cb()
         self.set_status(f"{what}: {', '.join(cur)}", GREEN)
+
+    def _add_app_name(self, entry, save_cb, what, name):
+        cur = [x.strip() for x in entry.get().replace(";", ",").split(",") if x.strip()]
+        if name.lower() not in [c.lower() for c in cur]:
+            cur.append(name)
+        entry.delete(0, "end")
+        entry.insert(0, ", ".join(cur))
+        save_cb()
+        self.set_status(f"{what}: {', '.join(cur)}", GREEN)
+
+    def _pick_running_app(self, entry, save_cb, what):
+        """Mac: выбрать из открытых программ (в окне выбора файлов программы в «Программах» не выбираются)."""
+        import mac_input
+        w = ctk.CTkToplevel(self)
+        w.title("Выбери программу")
+        w.geometry("340x460")
+        w.configure(fg_color=BG)
+        w.attributes("-topmost", True)
+        ctk.CTkLabel(w, text="Открытые программы", font=(FONT, 15, "bold"), text_color=GOLD).pack(
+            anchor="w", padx=14, pady=(12, 2))
+        ctk.CTkLabel(w, text="Нужной нет — открой её и нажми «Выбрать…» ещё раз", font=(FONT, 10),
+                     text_color=MUTED).pack(anchor="w", padx=14)
+        box = ctk.CTkScrollableFrame(w, fg_color=CARD, scrollbar_button_color=BORDER)
+        box.pack(fill="both", expand=True, padx=14, pady=10)
+
+        def choose(name):
+            w.destroy()
+            self._add_app_name(entry, save_cb, what, name)
+        for name in mac_input.running_apps():
+            ctk.CTkButton(box, text=name, anchor="w", height=30, font=(FONT, 12), fg_color="transparent",
+                          hover_color=CARD_2, text_color=TEXT, command=lambda n=name: choose(n)).pack(fill="x")
+        ctk.CTkButton(w, text="Отмена", width=100, height=30, font=(FONT, 12), fg_color="transparent",
+                      hover_color=BORDER, border_width=1, border_color=BORDER, text_color=MUTED,
+                      command=w.destroy).pack(pady=(0, 12))
 
     def _front_in_list(self, key, label):
         """Активная программа есть в списке настроек key? Пустой список — значит, везде."""

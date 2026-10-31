@@ -1068,9 +1068,10 @@ class AutoLayout:
                 continue
             words = SpellChecker(language=lang, distance=1).word_frequency.dictionary
             c = Counter()
-            for w in words:
-                for i in range(len(w) - 1):
-                    c[w[i:i + 2]] += 1
+            if lang == "ru":   # сочетания букв нужны только для русского
+                for w in words:
+                    for i in range(len(w) - 1):
+                        c[w[i:i + 2]] += 1
             self.bi[lang] = c
             self.d[lang] = words
         return self

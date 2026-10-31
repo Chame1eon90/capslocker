@@ -135,7 +135,17 @@ method('hide_to_tray', '''    def hide_to_tray(self):
         self.after(15, self._main_pump)
 
     # ---------- разрешения и запуск перехвата
+    def _lang_tick(self):
+        """Раз в 0,4 с запоминаем текущую раскладку: перехват берёт её отсюда и не ждёт окно на каждом пробеле."""
+        try:
+            self.caps_engine.lang_cache = (mac_input.current_lang() or "en", time.time())
+        except Exception:
+            pass
+        self.after(400, self._lang_tick)
+
     def _start_input(self):
+        self._lang_tick()
+
         def work():
             if self.caps_engine.start():
                 self.ui("perm", True)

@@ -340,6 +340,17 @@ def open_privacy_settings(which="Accessibility"):
     subprocess.run(["open", f"x-apple.systempreferences:com.apple.preference.security?Privacy_{which}"])
 
 
+def running_apps():
+    """Названия открытых программ (с окнами) — для списка «Выбрать…»."""
+    try:
+        from AppKit import NSWorkspace
+        names = {str(a.localizedName() or "") for a in NSWorkspace.sharedWorkspace().runningApplications()
+                 if a.activationPolicy() == 0}
+        return sorted((n for n in names if n and n != "Capslocker"), key=str.lower)
+    except Exception:
+        return []
+
+
 def frontmost_app():
     try:
         from AppKit import NSWorkspace
@@ -382,6 +393,8 @@ class MacInput:
         self.hold_since = 0.0
         self.pending = []
         self.hold_lock = threading.Lock()
+        self.lang_cache = None    # (язык, время) — обновляет окно программы, чтобы не ждать его на каждом пробеле
+        self._cb_word = 0         # сколько букв набрано после пробела (считает перехват)
         self.caps_down = False
         self.caps_press_id = 0
         self.caps_toggled = False
@@ -466,8 +479,15 @@ class MacInput:
                         if self.hold and time.time() - self.hold_since < 2.0:
                             if down:
                                 self.pending.append((code, flags))
+                                self._cb_word = self._cb_word + 1 if code in CHAR_KEYCODES else 0
                             return None  # придержали — отправим после замены
-                if down and code == VK_SPACE and self.capture_cb is None and self._auto_on() \
+                if down:
+                    if code in CHAR_KEYCODES:
+                        self._cb_word += 1
+                    elif code != VK_SPACE and code not in MODIFIER_KEYCODES:
+                        self._cb_word = 0
+                word_len, self._cb_word = (self._cb_word, 0) if down and code == VK_SPACE else (0, self._cb_word)
+                if down and code == VK_SPACE and word_len >= 3 and self.capture_cb is None and self._auto_on() \
                         and not flags & (kCGEventFlagMaskCommand | kCGEventFlagMaskControl):
                     with self.hold_lock:
                         self.hold, self.hold_since = True, time.time()
@@ -610,10 +630,16 @@ class MacInput:
         return any(name == e or name == e.replace(".app", "") for e in ex)
 
     def _lang(self):
+        c = self.lang_cache
+        if c and time.time() - c[1] < 2.0:
+            return c[0]
         return self.call_main(current_lang) or "en"
 
     def _switch(self, lang):
-        return self.call_main(lambda: select_lang(lang))
+        ok = self.call_main(lambda: select_lang(lang))
+        if ok:
+            self.lang_cache = (lang, time.time())
+        return ok
 
     def _replay(self, keys):
         caps = kCGEventFlagMaskAlphaShift if caps_lock_on() else 0
@@ -682,22 +708,32 @@ class MacInput:
                 if not items:
                     self.hold = False
                     return
+            run = []   # подряд идущие буквы отправляем одной пачкой
+
+            def send_run():
+                if run:
+                    self._replay(list(run))
+                    run.clear()
             for code, flags in items:
                 f = flags & (kCGEventFlagMaskShift | kCGEventFlagMaskAlternate)
                 if code in CHAR_KEYCODES or code == VK_SPACE:
                     self.buf.append((code, f))
                     if code == VK_SPACE:
+                        send_run()
                         self.last_fix = None
                         if self._auto_check(app):
                             continue
-                    self._replay([(code, f)])
-                elif code == VK_BACKSPACE:
+                    run.append((code, f))
+                    continue
+                send_run()
+                if code == VK_BACKSPACE:
                     key(VK_BACKSPACE)
                     if self.buf:
                         self.buf.pop()
                 else:
                     key(code, flags & (kCGEventFlagMaskShift | kCGEventFlagMaskAlternate))
                     self.reset()
+            send_run()
 
     def _auto_allowed(self, name):
         """Автоисправление — только в выбранных программах (пустой список — везде)."""
