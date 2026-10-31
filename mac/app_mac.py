@@ -202,9 +202,17 @@ class App(ctk.CTk):
                                    justify="left", wraplength=480)
         self.status.pack(side="bottom", fill="x", padx=22, pady=(4, 10))
         # прокрутка: на ноутбуках с масштабом 125–150% окно может не влезть по высоте
-        mk = lambda: ctk.CTkScrollableFrame(self, fg_color="transparent", scrollbar_button_color=BORDER)
+        # все вкладки лежат друг на друге и уже нарисованы — переключение просто поднимает нужную наверх
+        # (раньше вкладка собиралась заново при каждом переключении, на Mac это занимало секунды)
+        self._tab_holder = ctk.CTkFrame(self, fg_color="transparent")
+        self._tab_holder.pack(fill="both", expand=True)
+        self._tab_holder.grid_rowconfigure(0, weight=1)
+        self._tab_holder.grid_columnconfigure(0, weight=1)
+        mk = lambda: ctk.CTkScrollableFrame(self._tab_holder, fg_color="transparent", scrollbar_button_color=BORDER)
         self.tab_tr, self.tab_spell, self.tab_caps, self.tab_set = mk(), mk(), mk(), mk()
         self.tabs = {"tr": self.tab_tr, "spell": self.tab_spell, "caps": self.tab_caps, "set": self.tab_set}
+        for t in self.tabs.values():
+            t.grid(row=0, column=0, sticky="nsew")
         # Настройки: общие
         gen = Card(self.tab_set, "Общие")
         gen.pack(fill="x", padx=18, pady=6)
@@ -580,9 +588,8 @@ class App(ctk.CTk):
         key = self.tab_map[label]
         self.settings["tab"] = key
         save_settings(self.settings)
-        for t in self.tabs.values():
-            t.pack_forget()
-        self.tabs.get(key, self.tab_tr).pack(fill="both", expand=True)
+        tab = self.tabs.get(key, self.tab_tr)
+        getattr(tab, "_parent_frame", tab).tkraise()
 
     # ================================================================ вкладка «Раскладка»
     def _build_caps(self, P):
