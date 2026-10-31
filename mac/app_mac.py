@@ -259,7 +259,13 @@ class App(AppBase):
             if slot == "spell":
                 self.set_status(f"Исправлено ошибок: {n} ({how})", GREEN)
             else:
-                self.set_status(f"Вставлено в чат ({how})", GREEN)
+                if how == "без перевода":
+                    # фраза не похожа на русскую — покажем, что именно скопировалось из чата
+                    log(f"hotkey: перевод пропущен, из чата скопировано {text[:80]!r}")
+                    self.set_status(f"Не перевёл: из чата скопировалось «{text.strip()[:40]}» — это не русский текст",
+                                    ORANGE)
+                else:
+                    self.set_status(f"Вставлено в чат ({how})", GREEN)
                 self._warn_length(result)
         except Exception as e:
             log("hotkey failed: " + traceback.format_exc())
