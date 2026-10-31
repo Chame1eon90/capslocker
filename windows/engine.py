@@ -16,7 +16,7 @@ import time
 import traceback
 from ctypes import wintypes
 
-from layouts import KEYS, SPACE_SCAN, render, convert_text
+from layouts import KEYS, SPACE_SCAN, render, convert_text, key_char
 
 from core import DATA_DIR, log  # общий журнал Капслокера
 
@@ -249,6 +249,15 @@ class Engine:
         self.buf_hwnd = None
         self.last_type = 0.0     # когда последний раз что-то набрали
         self.last_fix = None    # для отмены
+        self.auto = None        # core.AutoLayout — автоматическое исправление (если включено)
+        self.on_auto_skip = None  # функция(слово): автоисправление отменили — больше это слово не трогать
+        # пока идёт автоисправление, нажатия придерживаем и потом отправляем сами — иначе буквы,
+        # набранные во время замены, попадут в середину слова
+        self.hold = False
+        self.hold_since = 0.0
+        self.pending = []
+        self.hold_lock = threading.Lock()
+        self.lang_hint = None    # (hwnd, язык, время): раскладка, на которую только что переключили
         self.caps_down = False
         self.caps_press_id = 0
         self.caps_toggled = False
@@ -296,9 +305,23 @@ class Engine:
                 if kb.dwExtraInfo != MARKER:
                     down = wparam in (WM_KEYDOWN, WM_SYSKEYDOWN)
                     injected = bool(kb.flags & LLKHF_INJECTED)
+                    if self.hold and not injected and kb.vkCode not in MODIFIER_VKS:
+                        with self.hold_lock:
+                            if self.hold and time.time() - self.hold_since < 2.0 \
+                                    and not (_down(VK_CONTROL) or _down(VK_MENU)):
+                                if down:
+                                    self.pending.append((kb.vkCode, kb.scanCode, kb.flags, _down(VK_SHIFT)))
+                                return 1  # придержали — отправим после замены
                     if kb.vkCode == VK_CAPITAL and not injected and self.settings.get("enabled", True):
                         self.q.put(("caps", down, _down(VK_SHIFT)))
                         return 1  # глотаем CapsLock — дальше решаем сами
+                    if down and kb.scanCode == SPACE_SCAN and not injected and self._auto_on() \
+                            and not (_down(VK_CONTROL) or _down(VK_MENU)) and self._auto_here():
+                        with self.hold_lock:
+                            self.hold, self.hold_since = True, time.time()
+                        # пробел печатаем сами после проверки — так он точно не опередит замену
+                        self.q.put(("space_auto", _down(VK_SHIFT)))
+                        return 1
                     if down:
                         self.q.put(("key", kb.vkCode, kb.scanCode, kb.flags, injected,
                                     _down(VK_SHIFT), _down(VK_CONTROL), _down(VK_MENU),
@@ -314,6 +337,8 @@ class Engine:
             try:
                 if ev[0] == "key":
                     self._on_key(*ev[1:])
+                elif ev[0] == "space_auto":
+                    self._on_space_auto(ev[1])
                 elif ev[0] == "caps":
                     self._on_caps(*ev[1:])
                 elif ev[0] == "hold":
@@ -363,6 +388,8 @@ class Engine:
             self.last_type = time.time()
             if len(self.buf) > 400:
                 self.buf = self.buf[-400:]
+            if scan == SPACE_SCAN:
+                self._flush_pending(hwnd)
             return
         self.reset()  # Enter, Tab, стрелки, Esc и т. п.
 
@@ -410,6 +437,106 @@ class Engine:
         return any(name == e or name == e + ".exe" for e in ex)
 
     # ---------- действия
+    def _auto_on(self):
+        return bool(self.settings.get("auto") and self.settings.get("enabled", True) and self.auto and self.auto.ready())
+
+    def _auto_here(self):
+        """Автоисправление работает в активном окне? (запоминаем по окну, чтобы перехват был быстрым)"""
+        hwnd = foreground()
+        c = getattr(self, "_here_cache", None)
+        key = (hwnd, self.settings.get("auto_only", ""), self.settings.get("exclude", ""))
+        if c and c[0] == key:
+            return c[1]
+        ok = not self._excluded(hwnd) and self._auto_allowed(process_name(hwnd))
+        self._here_cache = (key, ok)
+        return ok
+
+    def _lang(self, hwnd):
+        h = self.lang_hint
+        if h and h[0] == hwnd and time.time() - h[2] < 1.5:
+            return h[1]
+        return window_lang(hwnd)
+
+    def _on_space_auto(self, shift):
+        """Пробел, который мы придержали: проверить слово перед ним, напечатать пробел и всё, что набрали дальше."""
+        self.last_fix = None
+        hwnd = foreground()
+        try:
+            if hwnd != self.buf_hwnd:
+                self.buf = []
+            self.buf_hwnd = hwnd
+            self.buf.append((SPACE_SCAN, shift, self.caps_on))
+            self.last_type = time.time()
+            if not self._auto_check(hwnd):
+                type_text(" ")
+        finally:
+            self._flush_pending(hwnd)
+
+    def _auto_check(self, hwnd):
+        """Слово перед пробелом (пробел ещё не напечатан) набрано не в той раскладке? Тогда заменить его
+        вместе с пробелом и переключить язык. Возвращает True, если заменили."""
+        if not self._auto_on():
+            return False
+        j = len(self.buf) - 1                      # buf[-1] — только что нажатый пробел
+        i = j
+        while i > 0 and self.buf[i - 1][0] != SPACE_SCAN:
+            i -= 1
+        keys = self.buf[i:j]
+        if len(keys) < 3 or self._excluded(hwnd) or not self._auto_allowed(process_name(hwnd)):
+            return False
+        src = self._lang(hwnd)
+        if src not in ("ru", "en"):
+            return False
+        tgt = "en" if src == "ru" else "ru"
+        old, new = render(keys, src), render(keys, tgt)
+        if not self.auto.decide(old, new, src):
+            return False
+        tap(VK_BACK, len(keys))
+        type_text(new + " ")
+        switch_layout(hwnd, tgt)
+        self.lang_hint = (hwnd, tgt, time.time())
+        self.reset()
+        self.buf_hwnd = hwnd
+        self.last_fix = {"hwnd": hwnd, "old": old + " ", "new": new + " ", "src": src, "auto": True}
+        self.on_event("auto", f"{old} → {new}")
+        return True
+
+    def _flush_pending(self, hwnd):
+        """Отправить нажатия, придержанные во время проверки, — уже в правильной раскладке."""
+        while True:
+            with self.hold_lock:
+                items, self.pending = self.pending, []
+                if not items:
+                    self.hold = False
+                    return
+            for vk, scan, flags, shift in items:
+                extended = bool(flags & 1)
+                if (scan in KEYS or scan == SPACE_SCAN) and not extended:
+                    ch = key_char(scan, shift, self.caps_on, self._lang(hwnd) or "en")
+                    self.buf.append((scan, shift, self.caps_on))
+                    self.last_type = time.time()
+                    if scan == SPACE_SCAN:
+                        self.last_fix = None
+                        if self._auto_check(hwnd):
+                            continue
+                    if ch:
+                        type_text(ch)
+                elif vk == VK_BACK:
+                    tap(VK_BACK)
+                    if self.buf:
+                        self.buf.pop()
+                else:
+                    _send([_key_input(vk), _key_input(vk, True)])
+                    self.reset()
+
+    def _auto_allowed(self, name):
+        """Автоисправление — только в выбранных программах (пустой список — везде)."""
+        only = [x.strip().lower() for x in self.settings.get("auto_only", "").replace(";", ",").split(",") if x.strip()]
+        if not only:
+            return True
+        name = (name or "").lower().replace(".exe", "").replace(".app", "")
+        return bool(name) and any(e.replace(".exe", "").replace(".app", "") in name for e in only)
+
     def _fix_word(self, hwnd):
         lf = self.last_fix
         if lf and lf["hwnd"] == hwnd:
@@ -419,6 +546,11 @@ class Engine:
             switch_layout(hwnd, lf["src"])
             self.last_fix = None
             self.on_event("undo", lf["old"].strip())
+            if lf.get("auto") and self.auto:
+                w = lf["old"].strip().lower()
+                self.auto.skip.add(w)
+                if self.on_auto_skip:
+                    self.on_auto_skip(w)
             return
         n = self._segment() if hwnd == self.buf_hwnd else 0
         if n == 0 and self._fix_existing(hwnd):

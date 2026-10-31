@@ -40,7 +40,14 @@ from CoreFoundation import (
 )
 
 from core import log
-from layouts import convert_text
+from layouts import convert_text, render
+
+# виртуальные коды клавиш Mac (ANSI) → скан-коды Windows из layouts.KEYS
+MAC2SCAN = {0: 0x1E, 1: 0x1F, 2: 0x20, 3: 0x21, 4: 0x23, 5: 0x22, 6: 0x2C, 7: 0x2D, 8: 0x2E, 9: 0x2F,
+            11: 0x30, 12: 0x10, 13: 0x11, 14: 0x12, 15: 0x13, 16: 0x15, 17: 0x14, 18: 0x02, 19: 0x03,
+            20: 0x04, 21: 0x05, 22: 0x07, 23: 0x06, 24: 0x0D, 25: 0x0A, 26: 0x08, 27: 0x0C, 28: 0x09,
+            29: 0x0B, 30: 0x1B, 31: 0x18, 32: 0x16, 33: 0x1A, 34: 0x17, 35: 0x19, 37: 0x26, 38: 0x24,
+            39: 0x28, 40: 0x25, 41: 0x27, 42: 0x2B, 43: 0x33, 44: 0x35, 45: 0x31, 46: 0x32, 47: 0x34, 50: 0x29}
 
 MARKER = 0x0CAF5F1C
 
@@ -368,6 +375,8 @@ class MacInput:
 
         self.buf, self.buf_app = [], None  # [(keycode, flags)]
         self.last_fix = None
+        self.auto = None          # core.AutoLayout — автоматическое исправление (если включено)
+        self.on_auto_skip = None
         self.caps_down = False
         self.caps_press_id = 0
         self.caps_toggled = False
@@ -521,6 +530,8 @@ class MacInput:
             self.buf.append((code, flags & (kCGEventFlagMaskShift | kCGEventFlagMaskAlternate)))
             if len(self.buf) > 400:
                 self.buf = self.buf[-400:]
+            if code == VK_SPACE:
+                self._auto_fix(app)
             return
         self.reset()
 
@@ -591,6 +602,49 @@ class MacInput:
             key(code, flags | caps)
 
     # ---------- действия
+    def _auto_fix(self, app):
+        """После пробела: если слово набрано не в той раскладке — переделать и переключить язык."""
+        if not (self.settings.get("auto") and self.settings.get("enabled", True) and self.auto and self.auto.ready()):
+            return
+        j = len(self.buf) - 1
+        i = j
+        while i > 0 and self.buf[i - 1][0] != VK_SPACE:
+            i -= 1
+        keys = self.buf[i:j]
+        if len(keys) < 3 or any(c not in MAC2SCAN or f & kCGEventFlagMaskAlternate for c, f in keys):
+            return
+        if self._excluded() or not self._auto_allowed(frontmost_app()[0]):
+            return
+        src = self._lang()
+        if src not in ("ru", "en"):
+            return
+        tgt = "en" if src == "ru" else "ru"
+        caps = caps_lock_on()
+        scans = [(MAC2SCAN[c], bool(f & kCGEventFlagMaskShift), caps) for c, f in keys]
+        old, new = render(scans, src), render(scans, tgt)
+        if not self.auto.decide(old, new, src):
+            return
+        if not self.q.empty():
+            return  # уже набирают дальше — не мешаем
+        space = self.buf[j]
+        taps(VK_BACKSPACE, len(keys) + 1)
+        if not self._switch(tgt):
+            self._replay(keys + [space])
+            return
+        time.sleep(0.08)
+        self._replay(keys + [space])
+        self.reset()
+        self.last_fix = {"app": app, "n": len(keys) + 1, "src": src, "keys": keys + [space], "auto": old}
+        self.on_event("auto", f"{old} → {new}")
+
+    def _auto_allowed(self, name):
+        """Автоисправление — только в выбранных программах (пустой список — везде)."""
+        only = [x.strip().lower() for x in self.settings.get("auto_only", "").replace(";", ",").split(",") if x.strip()]
+        if not only:
+            return True
+        name = (name or "").lower().replace(".exe", "").replace(".app", "")
+        return bool(name) and any(e.replace(".exe", "").replace(".app", "") in name for e in only)
+
     def _fix(self):
         app = frontmost_app()[1]
         lf = self.last_fix
@@ -601,6 +655,11 @@ class MacInput:
             self._replay(lf["keys"]) if lf.get("keys") else type_text(lf["old"])
             self.last_fix = None
             self.on_event("undo", "")
+            if lf.get("auto") and self.auto:
+                w = lf["auto"].strip().lower()
+                self.auto.skip.add(w)
+                if self.on_auto_skip:
+                    self.on_auto_skip(w)
             return
         n = self._segment() if app == self.buf_app else 0
         log(f"caps: набрано {n} клавиш, раскладка будет определена")

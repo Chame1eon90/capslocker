@@ -14,6 +14,7 @@ import json
 import os
 import queue
 import re
+from collections import Counter
 import shutil
 import sys
 import threading
@@ -1021,6 +1022,84 @@ def apply_glossary(text, src, tgt):
 
 set_glossary(DEFAULT_GLOSSARY)
 
+
+# ---------------------------------------------------------------- автоматическое исправление раскладки
+
+class AutoLayout:
+    """Угадывает слово, набранное не в той раскладке (для автоматического исправления)."""
+    RU, EN = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюя"), set("abcdefghijklmnopqrstuvwxyz")
+    MIN_FREQ = {"ru": 5, "en": 300}
+    MIN_BIGRAM = {"ru": 3, "en": 25}
+
+    # английские сокращения, которые совпадают с русскими словами в другой раскладке
+    SLANG = {"ofc", "tbh", "imo", "imho", "btw", "omg", "lmao", "rofl", "idk", "irl", "afaik", "smh", "ngl"}
+
+    def __init__(self):
+        self.d, self.bi, self.skip = {}, {}, set()
+        self._loading = False
+
+    def load_async(self):
+        if self.ready() or self._loading:
+            return
+        self._loading = True
+
+        def work():
+            try:
+                self.load()
+            except Exception:
+                log("auto layout: " + traceback.format_exc())
+            self._loading = False
+        threading.Thread(target=work, daemon=True).start()
+
+    def load(self):
+        from spellchecker import SpellChecker
+        for lang in ("ru", "en"):
+            if lang in self.d:
+                continue
+            words = SpellChecker(language=lang, distance=1).word_frequency.dictionary
+            c = Counter()
+            for w in words:
+                for i in range(len(w) - 1):
+                    c[w[i:i + 2]] += 1
+            self.bi[lang] = c
+            self.d[lang] = words
+        return self
+
+    def ready(self):
+        return "ru" in self.d and "en" in self.d
+
+    def _core(self, s):
+        return re.sub(r"^\W+|\W+$", "", s).lower()
+
+    def _known(self, w, lang, freq=0):
+        if lang == "ru":
+            w2 = w.replace("ё", "е")
+            return max(self.d["ru"].get(w, 0), self.d["ru"].get(w2, 0), self.d["ru"].get(w2.replace("е", "ё"), 0)) > freq
+        return self.d["en"].get(w, 0) > freq
+
+    def _plausible(self, w, lang):
+        c = self.bi[lang]
+        return all(c.get(w[i:i + 2], 0) >= self.MIN_BIGRAM[lang] for i in range(len(w) - 1))
+
+    def decide(self, cur_text, alt_text, cur, protected=None):
+        """Вернуть True, если cur_text — ошибка раскладки, а alt_text — нужное слово."""
+        if not self.ready():
+            return False
+        other = "en" if cur == "ru" else "ru"
+        a, c = self._core(alt_text), self._core(cur_text)
+        protected = protected or is_protected
+        if len(a) < 3 or len(c) < 3 or c in self.skip or c in self.SLANG or protected(c) or protected(a):
+            return False
+        if not set(a) <= (self.RU if other == "ru" else self.EN):
+            return False
+        if set(c) <= (self.RU if cur == "ru" else self.EN):
+            # английский словарь большой — хватает его; русский маленький, поэтому
+            # ещё проверяем, похоже ли слово на русское по сочетаниям букв
+            if self._known(c, cur) or (cur == "ru" and self._plausible(c, cur)):
+                return False
+        if any(ch.isdigit() for ch in cur_text):
+            return False
+        return self._known(a, other, self.MIN_FREQ[other])
 
 # ---------------------------------------------------------------- проверка ошибок
 

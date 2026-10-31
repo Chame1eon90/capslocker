@@ -98,7 +98,8 @@ class App(ctk.CTk):
         self.settings.pop("deepl_key", None)
         self.engine.online.preferred = self.settings["online_service"]
         self.engine.online.fallback = bool(self.settings.get("online_fallback", True))
-        caps_defaults = {"enabled": True, "hold_ms": 450, "selection": True, "exclude": "", "scope": "phrase"}
+        caps_defaults = {"enabled": True, "hold_ms": 450, "selection": True, "exclude": "", "scope": "phrase",
+                         "auto": False, "auto_skip": [], "auto_only": ""}
         if "caps" not in self.settings:
             try:  # перенос настроек из отдельного CapsFix
                 with open(os.path.join(core.OLD_CAPS_DIR, "settings.json"), encoding="utf-8") as f:
@@ -147,6 +148,13 @@ class App(ctk.CTk):
         self.caps_engine = CapsEngine(self.caps_settings, on_event=lambda k, t: self.ui("capsev", k, t))
         self.caps_engine.start()
         self._start_tray()
+        # автоматическое исправление раскладки (по умолчанию выключено; словари грузятся, только если включено)
+        self.auto_layout = core.AutoLayout()
+        self.auto_layout.skip.update(self.caps_settings.get("auto_skip", []))
+        self.caps_engine.auto = self.auto_layout
+        self.caps_engine.on_auto_skip = lambda w: self.ui("auto_skip", w)
+        if self.caps_settings.get("auto"):
+            self.auto_layout.load_async()
 
     # ================================================================ UI
     def _build(self):
@@ -586,6 +594,32 @@ class App(ctk.CTk):
         self.sel_sw.pack(anchor="w", pady=3)
         if self.caps_settings["selection"]:
             self.sel_sw.select()
+        self.autofix_sw = ctk.CTkSwitch(st.body, text="Исправлять автоматически, без CapsLock", font=(FONT, 12),
+                                        text_color=TEXT, progress_color=GOLD, command=self.on_autofix)
+        self.autofix_sw.pack(anchor="w", pady=(3, 0))
+        if self.caps_settings.get("auto"):
+            self.autofix_sw.select()
+        ctk.CTkLabel(st.body, text="После пробела слово «ghbdtn» само станет «привет». Исправил зря — нажми\n"
+                                   "CapsLock: слово вернётся, и больше программа его трогать не будет.",
+                     font=(FONT, 10), text_color=MUTED, justify="left").pack(anchor="w", padx=(46, 0), pady=(0, 3))
+        self._auto_lbl = ctk.CTkLabel(st.body, text="Автоматически — только в программах (например: telegram, discord):",
+                                      font=(FONT, 10), text_color=MUTED)
+        self._auto_lbl.pack(anchor="w", padx=(46, 0))
+        ar = ctk.CTkFrame(st.body, fg_color="transparent")
+        ar.pack(fill="x", padx=(46, 0), pady=(0, 4))
+        self.auto_ex = ctk.CTkEntry(ar, height=28, font=(FONT, 12), fg_color=CARD_2, border_color=BORDER,
+                                    text_color=TEXT, placeholder_text="пусто — во всех программах")
+        self.auto_ex.pack(side="left", fill="x", expand=True)
+        self._auto_pick = ctk.CTkButton(ar, text="Выбрать…", width=84, height=28, font=(FONT, 12),
+                                        fg_color="transparent", hover_color=BORDER, border_width=1,
+                                        border_color=BORDER, text_color=GOLD,
+                                        command=lambda: self._pick_app_into(self.auto_ex, self.on_auto_apps,
+                                                                            "Автоисправление будет работать в"))
+        self._auto_pick.pack(side="left", padx=(6, 0))
+        if self.caps_settings.get("auto_only"):
+            self.auto_ex.insert(0, self.caps_settings["auto_only"])
+        self.auto_ex.bind("<FocusOut>", lambda e: self.on_auto_apps())
+        self.auto_ex.bind("<Return>", lambda e: self.on_auto_apps())
         self.auto_sw = ctk.CTkSwitch(self._g_set_general, text="Запускать Капслокер вместе с Windows (в трее)", font=(FONT, 12),
                                      text_color=TEXT, progress_color=GOLD, command=self.on_autostart)
         self.auto_sw.pack(anchor="w", pady=3)
@@ -630,6 +664,20 @@ class App(ctk.CTk):
     def on_scope(self, label):
         self.caps_settings["scope"] = self.scope_map[label]
         save_settings(self.settings)
+
+    def on_auto_apps(self):
+        self.caps_settings["auto_only"] = self.auto_ex.get().strip()
+        save_settings(self.settings)
+
+    def on_autofix(self):
+        on = bool(self.autofix_sw.get())
+        self.caps_settings["auto"] = on
+        save_settings(self.settings)
+        if on:
+            self.auto_layout.load_async()
+        self.caps_status_set("Автоисправление раскладки включено" if on else "Автоисправление выключено",
+                             GREEN if on else MUTED)
+        self._apply_dimming()
 
     def on_caps_selection(self):
         self.caps_settings["selection"] = bool(self.sel_sw.get())
@@ -678,6 +726,8 @@ class App(ctk.CTk):
     def _on_caps_event(self, kind, text):
         if kind == "fix":
             self.caps_status_set(f"Исправлено: {text}", GREEN)
+        elif kind == "auto":
+            self.caps_status_set(f"Исправлено автоматически: {text}", GREEN)
         elif kind == "undo":
             self.caps_status_set(f"Отменено: {text}", BLUE)
         elif kind == "switch":
@@ -792,6 +842,13 @@ class App(ctk.CTk):
                     self.on_feature(item[1], sw)
                 elif kind == "capsev":
                     self._on_caps_event(item[1], item[2])
+                elif kind == "auto_skip":
+                    skip = self.caps_settings.setdefault("auto_skip", [])
+                    if item[1] not in skip:
+                        skip.append(item[1])
+                        del skip[:-500]
+                        save_settings(self.settings)
+                    self.caps_status_set(f"Отменено — «{item[1]}» больше не исправляю автоматически", BLUE)
                 elif kind == "show":
                     self.show_window()
                 elif kind == "quit":
@@ -1240,6 +1297,9 @@ class App(ctk.CTk):
         caps = self.caps_settings.get("enabled", True)
         for card in (self._g_caps_how, self._g_caps_try, self._g_caps_set):
             self._dim(card, caps, keep=(self.caps_sw,))
+        # список программ для автоисправления — только когда оно включено
+        for wdg in (self._auto_lbl, self.auto_ex, self._auto_pick):
+            self._dim(wdg, caps and self.caps_settings.get("auto", False))
 
     def on_feature(self, key, sw):
         on = bool(sw.get())
