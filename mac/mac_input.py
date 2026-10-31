@@ -377,6 +377,11 @@ class MacInput:
         self.last_fix = None
         self.auto = None          # core.AutoLayout — автоматическое исправление (если включено)
         self.on_auto_skip = None
+        # пока идёт автоисправление, нажатия придерживаем и потом отправляем сами
+        self.hold = False
+        self.hold_since = 0.0
+        self.pending = []
+        self.hold_lock = threading.Lock()
         self.caps_down = False
         self.caps_press_id = 0
         self.caps_toggled = False
@@ -455,6 +460,20 @@ class MacInput:
                     if not autorepeat:
                         self.q.put(("caps", down, bool(flags & kCGEventFlagMaskShift)))
                     return None
+                if self.hold and code not in MODIFIER_KEYCODES \
+                        and not flags & (kCGEventFlagMaskCommand | kCGEventFlagMaskControl):
+                    with self.hold_lock:
+                        if self.hold and time.time() - self.hold_since < 2.0:
+                            if down:
+                                self.pending.append((code, flags))
+                            return None  # придержали — отправим после замены
+                if down and code == VK_SPACE and self.capture_cb is None and self._auto_on() \
+                        and not flags & (kCGEventFlagMaskCommand | kCGEventFlagMaskControl):
+                    with self.hold_lock:
+                        self.hold, self.hold_since = True, time.time()
+                    # пробел печатаем сами после проверки — так он точно не опередит замену
+                    self.q.put(("space_auto", flags))
+                    return None
                 if down:
                     if self.capture_cb is not None and code not in MODIFIER_KEYCODES and code != VK_ESC:
                         mods = [n for n, bit, _ in MOD_BITS if flags & bit]
@@ -492,6 +511,8 @@ class MacInput:
                 kind = ev[0]
                 if kind == "key":
                     self._on_key(ev[1], ev[2])
+                elif kind == "space_auto":
+                    self._on_space_auto(ev[1])
                 elif kind == "caps":
                     self._on_caps(ev[1], ev[2])
                 elif kind == "hold":
@@ -530,8 +551,6 @@ class MacInput:
             self.buf.append((code, flags & (kCGEventFlagMaskShift | kCGEventFlagMaskAlternate)))
             if len(self.buf) > 400:
                 self.buf = self.buf[-400:]
-            if code == VK_SPACE:
-                self._auto_fix(app)
             return
         self.reset()
 
@@ -602,40 +621,83 @@ class MacInput:
             key(code, flags | caps)
 
     # ---------- действия
-    def _auto_fix(self, app):
-        """После пробела: если слово набрано не в той раскладке — переделать и переключить язык."""
-        if not (self.settings.get("auto") and self.settings.get("enabled", True) and self.auto and self.auto.ready()):
-            return
+    def _auto_on(self):
+        return bool(self.settings.get("auto") and self.settings.get("enabled", True) and self.auto and self.auto.ready())
+
+    def _on_space_auto(self, flags):
+        """Пробел, который мы придержали: проверить слово перед ним, напечатать пробел и всё, что набрали дальше."""
+        self.last_fix = None
+        app = frontmost_app()[1]
+        try:
+            if app != self.buf_app:
+                self.buf = []
+            self.buf_app = app
+            self.buf.append((VK_SPACE, flags & (kCGEventFlagMaskShift | kCGEventFlagMaskAlternate)))
+            if not self._auto_check(app):
+                key(VK_SPACE, flags & kCGEventFlagMaskShift)
+        finally:
+            self._flush_pending(app)
+
+    def _auto_check(self, app):
+        """Слово перед пробелом (пробел ещё не напечатан) набрано не в той раскладке? Тогда заменить его
+        вместе с пробелом и переключить язык. Возвращает True, если заменили."""
+        if not self._auto_on():
+            return False
         j = len(self.buf) - 1
         i = j
         while i > 0 and self.buf[i - 1][0] != VK_SPACE:
             i -= 1
         keys = self.buf[i:j]
         if len(keys) < 3 or any(c not in MAC2SCAN or f & kCGEventFlagMaskAlternate for c, f in keys):
-            return
+            return False
         if self._excluded() or not self._auto_allowed(frontmost_app()[0]):
-            return
+            return False
         src = self._lang()
         if src not in ("ru", "en"):
-            return
+            return False
         tgt = "en" if src == "ru" else "ru"
         caps = caps_lock_on()
         scans = [(MAC2SCAN[c], bool(f & kCGEventFlagMaskShift), caps) for c, f in keys]
         old, new = render(scans, src), render(scans, tgt)
         if not self.auto.decide(old, new, src):
-            return
-        if not self.q.empty():
-            return  # уже набирают дальше — не мешаем
+            return False
         space = self.buf[j]
-        taps(VK_BACKSPACE, len(keys) + 1)
+        taps(VK_BACKSPACE, len(keys))
         if not self._switch(tgt):
             self._replay(keys + [space])
-            return
-        time.sleep(0.08)
+            return True
+        time.sleep(0.08)  # даём macOS переключиться
         self._replay(keys + [space])
         self.reset()
+        self.buf_app = app
         self.last_fix = {"app": app, "n": len(keys) + 1, "src": src, "keys": keys + [space], "auto": old}
         self.on_event("auto", f"{old} → {new}")
+        return True
+
+    def _flush_pending(self, app):
+        """Отправить нажатия, придержанные во время проверки (раскладка уже переключена)."""
+        while True:
+            with self.hold_lock:
+                items, self.pending = self.pending, []
+                if not items:
+                    self.hold = False
+                    return
+            for code, flags in items:
+                f = flags & (kCGEventFlagMaskShift | kCGEventFlagMaskAlternate)
+                if code in CHAR_KEYCODES or code == VK_SPACE:
+                    self.buf.append((code, f))
+                    if code == VK_SPACE:
+                        self.last_fix = None
+                        if self._auto_check(app):
+                            continue
+                    self._replay([(code, f)])
+                elif code == VK_BACKSPACE:
+                    key(VK_BACKSPACE)
+                    if self.buf:
+                        self.buf.pop()
+                else:
+                    key(code, flags & (kCGEventFlagMaskShift | kCGEventFlagMaskAlternate))
+                    self.reset()
 
     def _auto_allowed(self, name):
         """Автоисправление — только в выбранных программах (пустой список — везде)."""
