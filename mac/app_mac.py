@@ -347,6 +347,34 @@ class App(ctk.CTk):
         self.send_switch.pack(side="right")
         if self.settings["auto_send"]:
             self.send_switch.select()
+        # режим «без нажатий»: программа ничего не нажимает, только меняет буфер обмена
+        self.clipmode_sw = ctk.CTkSwitch(mine.body, text="Без нажатий: скопировал русский — в буфере уже английский",
+                                         font=(FONT, 12), text_color=TEXT, progress_color=GOLD,
+                                         command=self.on_clipmode)
+        self.clipmode_sw.pack(anchor="w", pady=(10, 0))
+        if self.settings.get("clip_ru2en"):
+            self.clipmode_sw.select()
+        ctk.CTkLabel(mine.body, text="Сам выдели фразу и скопируй (⌘A, ⌘C), потом вставь перевод (⌘V).\n"
+                                     "В игре программа ничего не нажимает — как будто ты пользуешься переводчиком.",
+                     font=(FONT, 10), text_color=MUTED, justify="left").pack(anchor="w", padx=(46, 0))
+        self._clipmode_lbl = ctk.CTkLabel(mine.body, text="Только в программах (например: wow, overwatch):",
+                                          font=(FONT, 10), text_color=MUTED)
+        self._clipmode_lbl.pack(anchor="w", padx=(46, 0), pady=(4, 0))
+        cr = ctk.CTkFrame(mine.body, fg_color="transparent")
+        cr.pack(fill="x", padx=(46, 0))
+        self.clipmode_ex = ctk.CTkEntry(cr, height=28, font=(FONT, 12), fg_color=CARD_2, border_color=BORDER,
+                                        text_color=TEXT, placeholder_text="пусто — во всех программах")
+        self.clipmode_ex.pack(side="left", fill="x", expand=True)
+        self._clipmode_pick = ctk.CTkButton(cr, text="Выбрать…", width=84, height=28, font=(FONT, 12),
+                                            fg_color="transparent", hover_color=BORDER, border_width=1,
+                                            border_color=BORDER, text_color=GOLD,
+                                            command=lambda: self._pick_app_into(self.clipmode_ex, self.on_clipmode_apps,
+                                                                                "Режим без нажатий работает в"))
+        self._clipmode_pick.pack(side="left", padx=(6, 0))
+        if self.settings.get("clip_ru2en_only"):
+            self.clipmode_ex.insert(0, self.settings["clip_ru2en_only"])
+        self.clipmode_ex.bind("<FocusOut>", lambda e: self.on_clipmode_apps())
+        self.clipmode_ex.bind("<Return>", lambda e: self.on_clipmode_apps())
 
         # ---- ручной перевод
         manual = self._g_manual = Card(self.tab_tr, "Быстрый перевод", "RU ⇄ EN")
@@ -675,6 +703,18 @@ class App(ctk.CTk):
 
     def on_scope(self, label):
         self.caps_settings["scope"] = self.scope_map[label]
+        save_settings(self.settings)
+
+    def on_clipmode(self):
+        on = bool(self.clipmode_sw.get())
+        self.settings["clip_ru2en"] = on
+        save_settings(self.settings)
+        self._apply_dimming()
+        self.set_status("Без нажатий: скопируй русскую фразу — перевод будет в буфере" if on
+                        else "Режим без нажатий выключен", GREEN if on else MUTED)
+
+    def on_clipmode_apps(self):
+        self.settings["clip_ru2en_only"] = self.clipmode_ex.get().strip()
         save_settings(self.settings)
 
     def on_auto_apps(self):
@@ -1338,6 +1378,10 @@ class App(ctk.CTk):
         caps = self.caps_settings.get("enabled", True)
         for card in (self._g_caps_how, self._g_caps_try, self._g_caps_set):
             self._dim(card, caps, keep=(self.caps_sw,))
+        # режим «без нажатий»: список программ — только когда режим включён
+        self._dim(self.clipmode_sw, tr)
+        for wdg in (self._clipmode_lbl, self.clipmode_ex, self._clipmode_pick):
+            self._dim(wdg, tr and self.settings.get("clip_ru2en", False))
         # список программ для автоисправления — только когда оно включено
         for wdg in (self._auto_lbl, self.auto_ex, self._auto_pick):
             self._dim(wdg, caps and self.caps_settings.get("auto", False))
@@ -1560,7 +1604,8 @@ class App(ctk.CTk):
             pass
         while True:
             time.sleep(0.5)
-            if not self.settings.get("watch_clipboard") or not self.settings.get("tr_enabled", True) or self.busy:
+            if not (self.settings.get("watch_clipboard") or self.settings.get("clip_ru2en")) \
+                    or not self.settings.get("tr_enabled", True) or self.busy:
                 continue
             try:
                 text = self._clip()
@@ -1573,7 +1618,11 @@ class App(ctk.CTk):
                 continue  # это раскладка взяла текст, а не пользователь скопировал
             if text in self.own_clip or len(text) > 2000:
                 continue
-            if detect_direction(text) != ("en", "ru"):
+            direction = detect_direction(text)
+            if direction == ("ru", "en") and self.settings.get("clip_ru2en"):
+                self._clip_ru2en(text)
+                continue
+            if direction != ("en", "ru") or not self.settings.get("watch_clipboard"):
                 continue
             toast_here = self.settings.get("toast", True) and self._front_in_list("toast_only", "плашка")
             try:
@@ -1586,6 +1635,32 @@ class App(ctk.CTk):
             except Exception as e:
                 log("incoming failed: " + traceback.format_exc())
                 self.set_status(str(e)[:80], RED)
+
+    def _clip_ru2en(self, text):
+        """Режим «без нажатий»: скопированную русскую фразу заменить в буфере английским переводом."""
+        if not self._front_in_list("clip_ru2en_only", "без нажатий"):
+            return
+        try:
+            self.set_status("Перевожу скопированное…", BLUE)
+            src_text = text
+            if self.settings.get("spell_before_translate", False) and self.settings.get("spell_enabled", True):
+                try:
+                    src_text, _, _ = self.engine.spell(text, punctuation=self._punct_here())
+                except Exception:
+                    src_text = text
+            result, how = self.engine.translate(src_text, ("ru", "en"))
+            if self._clip() != text:
+                return  # пока переводили, скопировали что-то другое
+            self._copy(result)
+            self.last_clip = result
+            self.ui("history", text.strip(), result.strip(), ("ru", "en"), how)
+            if self.settings.get("toast", True):
+                self.ui("toast", "Перевод в буфере — нажми ⌘V", result.strip())
+            self.set_status(f"Перевод в буфере — нажми ⌘V ({how})", GREEN)
+            self._warn_length(result)
+        except Exception as e:
+            log("clip ru2en failed: " + traceback.format_exc())
+            self.set_status(str(e)[:80], RED)
 
     # ================================================================ горячая клавиша
     def _setup_hotkey(self):

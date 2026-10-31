@@ -52,6 +52,8 @@ DEFAULT_SETTINGS = {
     "hotkey": "f9",
     "auto_send": False,      # нажимать Enter после вставки
     "watch_clipboard": True, # переводить скопированный английский текст
+    "clip_ru2en": False,     # режим «без нажатий»: скопированный русский → английский в буфере
+    "clip_ru2en_only": "",   # …только в этих программах (пусто — везде)
     "keep_on_top": True,
     "offline_engine": "fast",
     "unload_minutes": 10,
