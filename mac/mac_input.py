@@ -39,7 +39,7 @@ from CoreFoundation import (
 )
 
 from core import log
-from layouts import convert_text, render
+from layouts import convert_text, render, detect_text_lang
 
 # виртуальные коды клавиш Mac (ANSI) → скан-коды Windows из layouts.KEYS
 MAC2SCAN = {0: 0x1E, 1: 0x1F, 2: 0x20, 3: 0x21, 4: 0x23, 5: 0x22, 6: 0x2C, 7: 0x2D, 8: 0x2E, 9: 0x2F,
@@ -573,11 +573,39 @@ class MacInput:
             return
         self.reset()
 
-    def _segment(self):
+    def _smart(self):
+        return bool(self.auto and self.auto.ready() and self.settings.get("scope", "phrase") == "phrase")
+
+    def _segment(self, src=None):
+        """Что исправлять. Во фразе правильные слова в начале не трогаем; если и последнее слово
+        правильное — вернём -1 (только переключить язык)."""
         if self.settings.get("scope", "phrase") == "phrase":
             i = 0
             while i < len(self.buf) and self.buf[i][0] == VK_SPACE:
                 i += 1
+            if src and self._smart():
+                spans, k = [], i
+                while k < len(self.buf):
+                    if self.buf[k][0] == VK_SPACE:
+                        k += 1
+                        continue
+                    e = k
+                    while e < len(self.buf) and self.buf[e][0] != VK_SPACE:
+                        e += 1
+                    spans.append((k, e))
+                    k = e
+                caps = caps_lock_on()
+                words = []
+                for a, b in spans:
+                    ks = self.buf[a:b]
+                    if any(c not in MAC2SCAN or f & kCGEventFlagMaskAlternate for c, f in ks):
+                        words.append("")      # необычные клавиши — не считаем слово правильным
+                    else:
+                        words.append(render([(MAC2SCAN[c], bool(f & kCGEventFlagMaskShift), caps) for c, f in ks], src))
+                if words and self.auto.word_ok(words[-1], src):
+                    return -1
+                if words:
+                    i = spans[self.auto.phrase_start(words, src)][0]
             return len(self.buf) - i
         j = len(self.buf)
         while j > 0 and self.buf[j - 1][0] == VK_SPACE:
@@ -758,10 +786,10 @@ class MacInput:
                 if self.on_auto_skip:
                     self.on_auto_skip(w)
             return
-        n = self._segment() if app == self.buf_app else 0
+        n = self._segment(self._lang()) if app == self.buf_app else 0
         log(f"caps: набрано {n} клавиш, раскладка будет определена")
-        if n == 0:
-            if self._fix_existing(app):
+        if n <= 0:
+            if n == 0 and self._fix_existing(app):
                 return
             cur = self._lang()
             self._switch("en" if cur == "ru" else "ru")
@@ -812,6 +840,16 @@ class MacInput:
             seg = text[m:]
         else:
             seg = text.lstrip(" ")
+            if self._smart():
+                # правильные слова в начале фразы не трогаем
+                lang = detect_text_lang(seg)
+                words = seg.split(" ")
+                if lang and words:
+                    if self.auto.word_ok(words[-1] or (words[-2] if len(words) > 1 else ""), lang):
+                        key(VK_RIGHT)
+                        return False
+                    k = self.auto.phrase_start(words, lang)
+                    seg = " ".join(words[k:])
         prefix = text[:len(text) - len(seg)]
         new, tgt = convert_text(seg)
         log(f"fix_existing: язык {tgt}, менять {'нечего' if (tgt is None or new == seg) else 'да'}")

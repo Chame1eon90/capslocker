@@ -1037,6 +1037,9 @@ set_glossary(DEFAULT_GLOSSARY)
 
 # ---------------------------------------------------------------- автоматическое исправление раскладки
 
+from layouts import convert_text  # noqa: E402
+
+
 class AutoLayout:
     """Угадывает слово, набранное не в той раскладке (для автоматического исправления)."""
     RU, EN = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюя"), set("abcdefghijklmnopqrstuvwxyz")
@@ -1093,6 +1096,34 @@ class AutoLayout:
     def _plausible(self, w, lang):
         c = self.bi[lang]
         return all(c.get(w[i:i + 2], 0) >= self.MIN_BIGRAM[lang] for i in range(len(w) - 1))
+
+    def word_ok(self, text, lang):
+        """Слово уже правильное в раскладке lang? (настоящее слово этого языка или из словаря игровых слов)"""
+        c = self._core(text)
+        if not c or any(ch.isdigit() for ch in c):
+            return False
+        if not set(c) <= (self.RU if lang == "ru" else self.EN):
+            return False
+        if is_protected(c) or c in self.SLANG:
+            return True
+        other = "en" if lang == "ru" else "ru"
+        alt = self._core(convert_text(text, lang)[0])
+        if len(c) <= 2:
+            # короткие слова часто совпадают случайно: считаем правильными только очень частые,
+            # и только если в другой раскладке это не такое же частое слово
+            return self._known(c, lang, 5000 if lang == "en" else 300) and not self._known(alt, other, 300)
+        return self._known(c, lang)
+
+    def phrase_start(self, words, lang):
+        """Фраза, набранная подряд (список слов, как они выглядят сейчас): с какого слова исправлять.
+        Последнее слово исправляем всегда; идём назад и останавливаемся на первом правильном слове —
+        так «hello ghbdtn» станет «hello привет», а не «руддщ привет»."""
+        if not self.ready() or not words:
+            return 0
+        i = len(words) - 1
+        while i > 0 and not self.word_ok(words[i - 1], lang):
+            i -= 1
+        return i
 
     def decide(self, cur_text, alt_text, cur, protected=None):
         """Вернуть True, если cur_text — ошибка раскладки, а alt_text — нужное слово."""

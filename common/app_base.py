@@ -145,8 +145,11 @@ class AppBase(ctk.CTk):
         self.auto_layout.skip.update(self.caps_settings.get("auto_skip", []))
         self.caps_engine.auto = self.auto_layout
         self.caps_engine.on_auto_skip = lambda w: self.ui("auto_skip", w)
+        # словари нужны и автоисправлению, и умному CapsLock (не трогать правильные слова в начале фразы)
         if self.caps_settings.get("auto"):
             self.auto_layout.load_async()
+        elif self.caps_settings.get("enabled", True):
+            self.after(3000, self.auto_layout.load_async)
 
     # ================================================================ то, что делает каждая система по-своему
     def _platform_init(self):
@@ -616,7 +619,8 @@ class AppBase(ctk.CTk):
         if self.caps_settings["enabled"]:
             self.caps_sw.select()
         for key, txt in (("Caps", "Исправить набранное и сменить язык («ghbdtn rfr ltkf» → «привет как дела»)."
-                                  " Если ничего не набрано — просто сменить язык"),
+                                  " Правильные слова в начале фразы не трогает: «window server xnj pf» →"
+                                  " «window server что за». Набрано правильно или ничего — просто сменит язык"),
                          ("Caps ещё раз", "Отменить исправление"),
                          ("Держать Caps", "Обычный Caps Lock (ЗАГЛАВНЫЕ)"),
                          ("Shift + Caps", "Переделать выделенный текст")):

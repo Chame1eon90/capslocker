@@ -16,7 +16,7 @@ import time
 import traceback
 from ctypes import wintypes
 
-from layouts import KEYS, SPACE_SCAN, render, convert_text, key_char
+from layouts import KEYS, SPACE_SCAN, render, convert_text, key_char, detect_text_lang
 
 from core import log  # общий журнал Капслокера
 
@@ -352,12 +352,31 @@ class Engine:
     def reset(self):
         self.buf, self.buf_hwnd = [], None
 
-    def _segment(self):
-        """Что исправлять: всю фразу или только последнее слово (с пробелами после него)."""
+    def _segment(self, src=None):
+        """Что исправлять: всю фразу или только последнее слово (с пробелами после него).
+        Во фразе правильные слова в начале не трогаем: «что за window server xnj pf ghjwtcc» →
+        исправится только «xnj pf ghjwtcc». Если и последнее слово правильное — вернём -1 (только
+        переключить язык)."""
         if self.settings.get("scope", "phrase") == "phrase":
             i = 0
             while i < len(self.buf) and self.buf[i][0] == SPACE_SCAN:
                 i += 1  # пробелы в начале не трогаем
+            if src and self._smart():
+                spans, k = [], i
+                while k < len(self.buf):
+                    if self.buf[k][0] == SPACE_SCAN:
+                        k += 1
+                        continue
+                    e = k
+                    while e < len(self.buf) and self.buf[e][0] != SPACE_SCAN:
+                        e += 1
+                    spans.append((k, e))
+                    k = e
+                words = [render(self.buf[a:b], src) for a, b in spans]
+                if words and self.auto.word_ok(words[-1], src):
+                    return -1
+                if words:
+                    i = spans[self.auto.phrase_start(words, src)][0]
             return len(self.buf) - i
         j = len(self.buf)
         while j > 0 and self.buf[j - 1][0] == SPACE_SCAN:
@@ -537,6 +556,9 @@ class Engine:
         name = (name or "").lower().replace(".exe", "").replace(".app", "")
         return bool(name) and any(e.replace(".exe", "").replace(".app", "") in name for e in only)
 
+    def _smart(self):
+        return bool(self.auto and self.auto.ready() and self.settings.get("scope", "phrase") == "phrase")
+
     def _fix_word(self, hwnd):
         lf = self.last_fix
         if lf and lf["hwnd"] == hwnd:
@@ -552,10 +574,10 @@ class Engine:
                 if self.on_auto_skip:
                     self.on_auto_skip(w)
             return
-        n = self._segment() if hwnd == self.buf_hwnd else 0
+        n = self._segment(window_lang(hwnd)) if hwnd == self.buf_hwnd else 0
         if n == 0 and self._fix_existing(hwnd):
             return
-        if n == 0:
+        if n <= 0:
             cur = window_lang(hwnd)
             switch_layout(hwnd, None if cur is None else ("en" if cur == "ru" else "ru"))
             self.on_event("switch", "")
@@ -612,6 +634,16 @@ class Engine:
             seg = text[m:]
         else:
             seg = text.lstrip(" ")
+            if self._smart():
+                # правильные слова в начале фразы не трогаем
+                lang = detect_text_lang(seg)
+                words = seg.split(" ")
+                if lang and words:
+                    if self.auto.word_ok(words[-1] or (words[-2] if len(words) > 1 else ""), lang):
+                        unselect()
+                        return False
+                    k = self.auto.phrase_start(words, lang)
+                    seg = " ".join(words[k:])
         prefix = text[:len(text) - len(seg)]
         new, tgt = convert_text(seg)
         if tgt is None or new == seg:
