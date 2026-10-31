@@ -1040,6 +1040,28 @@ set_glossary(DEFAULT_GLOSSARY)
 from layouts import convert_text  # noqa: E402
 
 
+def fix_mojibake(text):
+    """Некоторые игры кладут в буфер русский текст в неправильной кодировке: «Ïðèâåò» или «ÐŸÑ€Ð¸Ð²ÐµÑ‚»
+    вместо «Привет». Если похоже на это — возвращаем нормальный текст."""
+    if not text or CYR.search(text) or not re.search("[\u00c0-\u00ff]", text):
+        return text
+    for enc in ("cp1252", "latin-1"):
+        try:
+            raw = text.encode(enc)
+        except UnicodeEncodeError:
+            continue
+        for dec in ("utf-8", "cp1251"):
+            try:
+                fixed = raw.decode(dec)
+            except UnicodeDecodeError:
+                continue
+            letters = [ch for ch in fixed if ch.isalpha()]
+            cyr = sum(1 for ch in letters if CYR.match(ch))
+            if letters and cyr / len(letters) >= 0.6:   # «café» не трогаем
+                return fixed
+    return text
+
+
 class AutoLayout:
     """Угадывает слово, набранное не в той раскладке (для автоматического исправления)."""
     RU, EN = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюя"), set("abcdefghijklmnopqrstuvwxyz")
@@ -1499,7 +1521,7 @@ class Engine:
 
     def translate(self, text, direction=None):
         """direction: ('ru','en'), ('en','ru') или None = определить само."""
-        text = text.strip()
+        text = fix_mojibake(text).strip()
         if not text:
             return "", "пусто"
         prefix, body = "", text
