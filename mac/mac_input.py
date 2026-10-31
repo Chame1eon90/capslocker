@@ -13,7 +13,6 @@
 import atexit
 import ctypes
 import json
-import os
 import queue
 import subprocess
 import threading

@@ -18,7 +18,7 @@ from ctypes import wintypes
 
 from layouts import KEYS, SPACE_SCAN, render, convert_text, key_char
 
-from core import DATA_DIR, log  # общий журнал Капслокера
+from core import log  # общий журнал Капслокера
 
 
 # ------------------------------------------------------------------ Win32

@@ -3,7 +3,7 @@ name: Сборка (Windows и macOS)
 on:
   push:
     branches: [main]
-    paths: ["mac/**", "windows/**", ".github/workflows/build.yml"]
+    paths: ["mac/**", "windows/**", "common/**", ".github/workflows/build.yml"]
   workflow_dispatch: {}
 
 permissions:
@@ -22,6 +22,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Общие файлы (common/) — в папку Mac-версии
+        run: cp common/*.py mac/
 
       - name: Python 3.12 с python.org (с Tk для окна)
         run: |
@@ -131,6 +133,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Общие файлы (common/) — в папку Windows-версии
+        shell: bash
+        run: cp common/*.py windows/
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

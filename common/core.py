@@ -12,7 +12,6 @@ WoW-переводчик чата: русский <-> английский.
 """
 import json
 import os
-import queue
 import re
 from collections import Counter
 import shutil
@@ -26,15 +25,18 @@ import urllib.request
 import zipfile
 
 APP_NAME = "Капслокер"
-_BASE = os.path.expanduser("~/Library/Application Support")
-# сертификаты для HTTPS (в собранной программе для macOS их нет «из коробки»)
-try:
-    import ssl as _ssl
-    import certifi as _certifi
-    _CTX = _ssl.create_default_context(cafile=_certifi.where())
-    _ssl._create_default_https_context = lambda *a, **k: _CTX
-except Exception:
-    pass
+if sys.platform == "darwin":
+    _BASE = os.path.expanduser("~/Library/Application Support")
+    # сертификаты для HTTPS (в собранной программе для macOS их нет «из коробки»)
+    try:
+        import ssl as _ssl
+        import certifi as _certifi
+        _CTX = _ssl.create_default_context(cafile=_certifi.where())
+        _ssl._create_default_https_context = lambda *a, **k: _CTX
+    except Exception:
+        pass
+else:
+    _BASE = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
 DATA_DIR = os.path.join(_BASE, "Capslocker")
 OLD_DATA_DIR = os.path.join(_BASE, "WowTranslator")
 OLD_CAPS_DIR = os.path.join(_BASE, "CapsFix")
