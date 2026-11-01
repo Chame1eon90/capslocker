@@ -486,7 +486,7 @@ class MacInput:
                     elif code != VK_SPACE and code not in MODIFIER_KEYCODES:
                         self._cb_word = 0
                 word_len, self._cb_word = (self._cb_word, 0) if down and code == VK_SPACE else (0, self._cb_word)
-                if down and code == VK_SPACE and word_len >= 3 and self.capture_cb is None and self._auto_on() \
+                if down and code == VK_SPACE and word_len >= 1 and self.capture_cb is None and self._auto_on() \
                         and not flags & (kCGEventFlagMaskCommand | kCGEventFlagMaskControl):
                     with self.hold_lock:
                         self.hold, self.hold_since = True, time.time()
@@ -701,7 +701,7 @@ class MacInput:
         while i > 0 and self.buf[i - 1][0] != VK_SPACE:
             i -= 1
         keys = self.buf[i:j]
-        if len(keys) < 3 or any(c not in MAC2SCAN or f & kCGEventFlagMaskAlternate for c, f in keys):
+        if not keys or any(c not in MAC2SCAN or f & kCGEventFlagMaskAlternate for c, f in keys):
             return False
         if self._excluded() or not self._auto_allowed(frontmost_app()[0]):
             return False

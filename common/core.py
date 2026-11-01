@@ -998,8 +998,11 @@ def set_glossary(text):
         for f in ([] if one_way else en_forms):
             en2ru.append((re.compile(_pattern(f, "en"), re.IGNORECASE), ru_forms[0], len(f)))
         for f in ru_forms + en_forms:
-            for w in f.split():
-                protect.add(w.lower())
+            parts = f.split()
+            for w in parts:
+                # из фраз («Кошка с ранцем») короткие слова вроде «с», «в» не защищаем
+                if len(parts) == 1 or len(w) >= 4:
+                    protect.add(w.lower())
     ru2en.sort(key=lambda x: -x[2])   # длинные фразы — первыми
     en2ru.sort(key=lambda x: -x[2])
     _GLOSSARY.update(ru2en=ru2en, en2ru=en2ru, protect=protect, stems=stems)
@@ -1147,6 +1150,30 @@ class AutoLayout:
             i -= 1
         return i
 
+    RU_ONE = set("вскяиауо")   # русские слова из одной буквы
+
+    def _decide_short(self, cur_text, c, a, cur, other, protected):
+        """Слова из 1–2 букв: «lf» → «да», «yt» → «не», «z» → «я». Короткие сочетания часто совпадают
+        случайно, поэтому исправляем, только если в другой раскладке получается очень частое слово,
+        а набранное — не обычное слово своего языка."""
+        f = lambda w, lang: self.d[lang].get(w, 0)
+        if cur == "en":
+            if f(c, "en") >= 1000:
+                return False                       # it, on, ok, no … — настоящие английские слова
+            if not (f(a, "ru") >= 50000 or a in self.RU_ONE):
+                return False
+        else:
+            if f(c, "ru") >= 1000 or c in self.RU_ONE:
+                return False
+            if f(a, "en") < 1000000:               # is, it, to, in … — только самые частые
+                return False
+        if protected(c) or protected(a):
+            # слово из словаря игровых слов («lf» = LF): написанное большими буквами не трогаем,
+            # а маленькими исправляем, только если в другой раскладке это очень частое слово («да»)
+            if cur_text.strip().isupper() or max(f(a, other), 0) < 100000:
+                return False
+        return True
+
     def decide(self, cur_text, alt_text, cur, protected=None):
         """Вернуть True, если cur_text — ошибка раскладки, а alt_text — нужное слово."""
         if not self.ready():
@@ -1154,9 +1181,15 @@ class AutoLayout:
         other = "en" if cur == "ru" else "ru"
         a, c = self._core(alt_text), self._core(cur_text)
         protected = protected or is_protected
-        if len(a) < 3 or len(c) < 3 or c in self.skip or c in self.SLANG or protected(c) or protected(a):
+        if not a or not c or len(a) != len(c) or c in self.skip or c in self.SLANG:
             return False
         if not set(a) <= (self.RU if other == "ru" else self.EN):
+            return False
+        if any(ch.isdigit() for ch in cur_text):
+            return False
+        if len(c) <= 2:
+            return self._decide_short(cur_text, c, a, cur, other, protected)
+        if protected(c) or protected(a):
             return False
         if set(c) <= (self.RU if cur == "ru" else self.EN):
             # английский словарь большой — хватает его; русский маленький, поэтому

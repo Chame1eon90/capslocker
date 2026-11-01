@@ -501,7 +501,7 @@ class Engine:
         while i > 0 and self.buf[i - 1][0] != SPACE_SCAN:
             i -= 1
         keys = self.buf[i:j]
-        if len(keys) < 3 or self._excluded(hwnd) or not self._auto_allowed(process_name(hwnd)):
+        if not keys or self._excluded(hwnd) or not self._auto_allowed(process_name(hwnd)):
             return False
         src = self._lang(hwnd)
         if src not in ("ru", "en"):
