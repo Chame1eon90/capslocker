@@ -21,6 +21,18 @@ except Exception:
     BUILD = 0
 
 REPO = "Chame1eon90/capslocker"
+
+
+def _open(req, timeout=None):
+    """Запрос с текущими настройками прокси Windows; если подключение отвергнуто — ещё раз напрямую."""
+    try:
+        return urllib.request.build_opener(urllib.request.ProxyHandler(urllib.request.getproxies())).open(
+            req, timeout=timeout)
+    except OSError as e:
+        r = getattr(e, "reason", e)
+        if isinstance(r, ConnectionRefusedError) or getattr(r, "errno", None) in (111, 10061):
+            return urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=timeout)
+        raise
 UA = {"User-Agent": "Capslocker-updater", "Accept": "application/vnd.github+json"}
 
 
@@ -44,7 +56,7 @@ def latest(timeout=10):
     for page in (1, 2, 3):
         req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}",
                                      headers=UA)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _open(req, timeout=timeout) as r:
             chunk = json.loads(r.read().decode("utf-8"))
         releases += chunk
         if len(chunk) < 100:
@@ -64,7 +76,7 @@ def latest(timeout=10):
 
 def download(url, dest, progress=lambda pct, msg: None, timeout=30):
     req = urllib.request.Request(url, headers={"User-Agent": "Capslocker-updater"})
-    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:
+    with _open(req, timeout=timeout) as r, open(dest, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0)
         done = 0
         while True:

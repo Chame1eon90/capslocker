@@ -178,6 +178,14 @@ _DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # бе�
 _NET = {"direct": False, "logged": False}
 
 
+def _fresh_open(req, timeout=None):
+    """Как urllib.request.urlopen, но настройки прокси Windows читаются заново при каждом запросе.
+    (Обычный urlopen запоминает их при первом запросе: если тогда был включён прокси какой-то
+    программы, а потом его выключили, программа так и стучится в несуществующий прокси.)"""
+    return urllib.request.build_opener(urllib.request.ProxyHandler(urllib.request.getproxies())).open(
+        req, timeout=timeout)
+
+
 def _refused(e):
     r = getattr(e, "reason", e)
     return isinstance(r, ConnectionRefusedError) or getattr(r, "errno", None) in (111, 10061)
@@ -195,12 +203,12 @@ def _http(url, data=None, headers=None, timeout=4, method=None, opener=None):
             return r.read().decode("utf-8")
     if opener:
         return go(opener.open)
-    first, second = (_DIRECT.open, urllib.request.urlopen) if _NET["direct"] else (urllib.request.urlopen, _DIRECT.open)
+    first, second = (_DIRECT.open, _fresh_open) if _NET["direct"] else (_fresh_open, _DIRECT.open)
     try:
         return go(first)
     except (urllib.error.URLError, OSError) as e:
         proxies = urllib.request.getproxies()
-        if not proxies or not _refused(e) and _NET["direct"] is False:
+        if not (_refused(e) or _NET["direct"]):
             raise
         if not _NET["logged"]:
             _NET["logged"] = True
