@@ -681,6 +681,15 @@ class AppBase(ctk.CTk):
             self.auto_ex.insert(0, self.caps_settings["auto_only"])
         self.auto_ex.bind("<FocusOut>", lambda e: self.on_auto_apps())
         self.auto_ex.bind("<Return>", lambda e: self.on_auto_apps())
+        sk = ctk.CTkFrame(st.body, fg_color="transparent")
+        sk.pack(fill="x", padx=(46, 0), pady=(0, 4))
+        self._skip_lbl = ctk.CTkLabel(sk, text="", font=(FONT, 10), text_color=MUTED)
+        self._skip_lbl.pack(side="left")
+        self._skip_btn = ctk.CTkButton(sk, text="Исключения…", width=110, height=26, font=(FONT, 12),
+                                       fg_color="transparent", hover_color=BORDER, border_width=1,
+                                       border_color=BORDER, text_color=GOLD, command=self.on_skip_words)
+        self._skip_btn.pack(side="right")
+        self._update_skip_label()
         self.auto_sw = ctk.CTkSwitch(self._g_set_general, text="Запускать Капслокер при входе в систему" if IS_MAC else "Запускать Капслокер вместе с Windows (в трее)", font=(FONT, 12),
                                      text_color=TEXT, progress_color=GOLD, command=self.on_autostart)
         self.auto_sw.pack(anchor="w", pady=3)
@@ -740,6 +749,57 @@ class AppBase(ctk.CTk):
     def on_clipmode_apps(self):
         self.settings["clip_ru2en_only"] = self.clipmode_ex.get().strip()
         save_settings(self.settings)
+
+    def _update_skip_label(self):
+        n = len(self.caps_settings.get("auto_skip", []))
+        self._skip_lbl.configure(text=f"Не исправлять автоматически: {n} сл." if n else
+                                 "Слов-исключений пока нет")
+
+    def on_skip_words(self):
+        """Список слов, которые автоисправление не трогает: посмотреть, удалить, добавить свои."""
+        if getattr(self, "_skip_win", None) and self._skip_win.winfo_exists():
+            self._skip_win.lift()
+            return
+        w = ctk.CTkToplevel(self)
+        self._skip_win = w
+        w.title("Исключения автоисправления")
+        w.geometry("480x520")
+        w.configure(fg_color=BG)
+        w.attributes("-topmost", True)
+        ctk.CTkLabel(w, text="Слова-исключения", font=(FONT, 18, "bold"), text_color=GOLD).pack(
+            anchor="w", padx=16, pady=(14, 2))
+        ctk.CTkLabel(w, text="Эти слова автоисправление не меняет. Сюда попадают слова, исправление\n"
+                             "которых ты отменил CapsLock-ом. По одному слову в строке —\n"
+                             "можно удалить лишние или дописать свои (как они набраны: «ye», «lf»).",
+                     font=(FONT, 11), text_color=MUTED, justify="left").pack(anchor="w", padx=16)
+        box = ctk.CTkTextbox(w, font=("Consolas" if sys.platform == "win32" else "Menlo", 13),
+                             fg_color=CARD_2, text_color=TEXT, border_color=BORDER, border_width=1)
+        box.pack(fill="both", expand=True, padx=16, pady=10)
+        box.insert("1.0", "\n".join(self.caps_settings.get("auto_skip", [])))
+        br = ctk.CTkFrame(w, fg_color="transparent")
+        br.pack(fill="x", padx=16, pady=(0, 14))
+
+        def save():
+            words = []
+            for line in box.get("1.0", "end").splitlines():
+                word = line.strip().lower()
+                if word and word not in words:
+                    words.append(word)
+            self.caps_settings["auto_skip"] = words
+            save_settings(self.settings)
+            self.auto_layout.skip = set(words)
+            self._update_skip_label()
+            self.caps_status_set(f"Исключений: {len(words)}", GREEN)
+            w.destroy()
+
+        def clear():
+            box.delete("1.0", "end")
+
+        ctk.CTkButton(br, text="Сохранить", width=120, height=32, font=(FONT, 13, "bold"), fg_color=GOLD,
+                      hover_color=GOLD_HOVER, text_color=BG, command=save).pack(side="right")
+        ctk.CTkButton(br, text="Очистить всё", width=120, height=32, font=(FONT, 12), fg_color="transparent",
+                      hover_color=BORDER, border_width=1, border_color=BORDER, text_color=MUTED,
+                      command=clear).pack(side="left")
 
     def on_auto_apps(self):
         self.caps_settings["auto_only"] = self.auto_ex.get().strip()
@@ -846,6 +906,7 @@ class AppBase(ctk.CTk):
                         skip.append(item[1])
                         del skip[:-500]
                         save_settings(self.settings)
+                        self._update_skip_label()
                     self.caps_status_set(f"Отменено — «{item[1]}» больше не исправляю автоматически", BLUE)
                 elif kind == "show":
                     self.show_window()
@@ -1279,7 +1340,7 @@ class AppBase(ctk.CTk):
         for wdg in (self._clipmode_lbl, self.clipmode_ex, self._clipmode_pick):
             self._dim(wdg, tr and self.settings.get("clip_ru2en", False))
         # список программ для автоисправления — только когда оно включено
-        for wdg in (self._auto_lbl, self.auto_ex, self._auto_pick):
+        for wdg in (self._auto_lbl, self.auto_ex, self._auto_pick, self._skip_lbl, self._skip_btn):
             self._dim(wdg, caps and self.caps_settings.get("auto", False))
 
     def on_feature(self, key, sw):
