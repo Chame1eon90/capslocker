@@ -1544,6 +1544,7 @@ class Engine:
             return self.online.translate(text, src, tgt, timeout=3)
         except Exception as e:
             log("online failed, fallback offline: %r" % e)
+            log(f"сеть: прокси системы {urllib.request.getproxies() or 'нет'}, напрямую: {_NET['direct']}")
             if not self.offline_ready():
                 raise RuntimeError("Нет интернета, а офлайн-модель не скачана.")
             result, how = self._offline(text, src, tgt)
