@@ -1072,7 +1072,9 @@ class AutoLayout:
     MIN_BIGRAM = {"ru": 3, "en": 25}
 
     # английские сокращения, которые совпадают с русскими словами в другой раскладке
-    SLANG = {"ofc", "tbh", "imo", "imho", "btw", "omg", "lmao", "rofl", "idk", "irl", "afaik", "smh", "ngl"}
+    SLANG = {"ofc", "tbh", "imo", "imho", "btw", "omg", "lmao", "rofl", "idk", "irl", "afaik", "smh", "ngl",
+             # короткие английские сокращения и буквы, которые не стоит превращать в русские
+             "vs", "fr", "fl", "lt", "nb", "cb", "ct", "vt", "t", "e"}
 
     def __init__(self):
         self.d, self.bi, self.skip = {}, {}, set()
@@ -1158,9 +1160,11 @@ class AutoLayout:
         а набранное — не обычное слово своего языка."""
         f = lambda w, lang: self.d[lang].get(w, 0)
         if cur == "en":
-            if f(c, "en") >= 1000:
-                return False                       # it, on, ok, no … — настоящие английские слова
-            if not (f(a, "ru") >= 50000 or a in self.RU_ONE):
+            fc, fa = f(c, "en"), f(a, "ru")
+            # русское слово должно быть заметно частым и встречаться намного чаще набранного английского:
+            # «ye» → «ну», «xt» → «че»; а it, on, ok, no остаются (по-русски там бессмыслица)
+            one = a in self.RU_ONE and fc < 1000
+            if not (one or (fa >= 500 and fa >= 10 * fc)):
                 return False
         else:
             if f(c, "ru") >= 1000 or c in self.RU_ONE:
