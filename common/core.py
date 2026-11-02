@@ -129,13 +129,40 @@ UA = "Mozilla/5.0"
 UA_BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
 
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # без системного прокси
+_NET = {"direct": False, "logged": False}
+
+
+def _refused(e):
+    r = getattr(e, "reason", e)
+    return isinstance(r, ConnectionRefusedError) or getattr(r, "errno", None) in (111, 10061)
+
+
 def _http(url, data=None, headers=None, timeout=4, method=None, opener=None):
+    """Запрос в интернет. Если в системе указан прокси (его ставят VPN-программы), а он не отвечает
+    («подключение отвергнуто») — пробуем напрямую и дальше ходим напрямую."""
     h = {"User-Agent": UA}
     h.update(headers or {})
-    req = urllib.request.Request(url, data=data, headers=h, method=method)
-    op = opener.open if opener else urllib.request.urlopen
-    with op(req, timeout=timeout) as r:
-        return r.read().decode("utf-8")
+
+    def go(open_fn):
+        req = urllib.request.Request(url, data=data, headers=h, method=method)
+        with open_fn(req, timeout=timeout) as r:
+            return r.read().decode("utf-8")
+    if opener:
+        return go(opener.open)
+    first, second = (_DIRECT.open, urllib.request.urlopen) if _NET["direct"] else (urllib.request.urlopen, _DIRECT.open)
+    try:
+        return go(first)
+    except (urllib.error.URLError, OSError) as e:
+        proxies = urllib.request.getproxies()
+        if not proxies or not _refused(e) and _NET["direct"] is False:
+            raise
+        if not _NET["logged"]:
+            _NET["logged"] = True
+            log(f"сеть: системный прокси {proxies} не отвечает — пробую напрямую")
+        out = go(second)
+        _NET["direct"] = second is _DIRECT.open
+        return out
 
 
 class MultiMethodService:
