@@ -36,6 +36,7 @@ MARKER = 0x0CAF5F1C  # метка наших собственных нажати
 
 VK_BACK, VK_TAB, VK_RETURN, VK_SHIFT, VK_CONTROL, VK_MENU = 0x08, 0x09, 0x0D, 0x10, 0x11, 0x12
 VK_CAPITAL, VK_SPACE, VK_LWIN, VK_RWIN = 0x14, 0x20, 0x5B, 0x5C
+MOD_GROUP = {0x11, 0x12, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C}   # Ctrl, Alt, Win
 MODIFIER_VKS = {0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C, VK_CAPITAL}
 
 INPUT_KEYBOARD = 1
@@ -257,6 +258,8 @@ class Engine:
         self.hold_since = 0.0
         self.pending = []
         self.hold_lock = threading.Lock()
+        self.mods_held = set()   # зажатые Ctrl/Alt/Win (по нашему перехвату)
+        self.mods_time = 0.0
         self.lang_hint = None    # (hwnd, язык, время): раскладка, на которую только что переключили
         self.caps_down = False
         self.caps_press_id = 0
@@ -305,10 +308,15 @@ class Engine:
                 if kb.dwExtraInfo != MARKER:
                     down = wparam in (WM_KEYDOWN, WM_SYSKEYDOWN)
                     injected = bool(kb.flags & LLKHF_INJECTED)
+                    if kb.vkCode in MOD_GROUP:
+                        # сами запоминаем, какие Ctrl/Alt/Win зажаты: другие программы (например, Handy
+                        # с сочетанием Ctrl+Пробел) могут «съесть» нажатие Ctrl, и система его не увидит
+                        (self.mods_held.add if down else self.mods_held.discard)(kb.vkCode)
+                        self.mods_time = time.time()
                     if self.hold and not injected and kb.vkCode not in MODIFIER_VKS:
                         with self.hold_lock:
                             if self.hold and time.time() - self.hold_since < 2.0 \
-                                    and not (_down(VK_CONTROL) or _down(VK_MENU)):
+                                    and not self._combo_held():
                                 if down:
                                     self.pending.append((kb.vkCode, kb.scanCode, kb.flags, _down(VK_SHIFT)))
                                 return 1  # придержали — отправим после замены
@@ -316,7 +324,7 @@ class Engine:
                         self.q.put(("caps", down, _down(VK_SHIFT)))
                         return 1  # глотаем CapsLock — дальше решаем сами
                     if down and kb.scanCode == SPACE_SCAN and not injected and self._auto_on() \
-                            and not (_down(VK_CONTROL) or _down(VK_MENU)) and self._auto_here():
+                            and not self._combo_held() and self._auto_here():
                         with self.hold_lock:
                             self.hold, self.hold_since = True, time.time()
                         # пробел печатаем сами после проверки — так он точно не опередит замену
@@ -329,6 +337,15 @@ class Engine:
         except Exception:
             pass
         return user32.CallNextHookEx(None, n, wparam, lparam)
+
+    def _combo_held(self):
+        """Зажат Ctrl, Alt или Win — значит, это сочетание клавиш (Ctrl+Пробел и т. п.), а не набор текста."""
+        if self.mods_held:
+            # отпускание могло потеряться (например, Win+L) — через пару секунд без нажатий забываем
+            if time.time() - self.mods_time < 3.0 or any(_down(vk) for vk in self.mods_held):
+                return True
+            self.mods_held.clear()
+        return _down(VK_CONTROL) or _down(VK_MENU) or _down(VK_LWIN) or _down(VK_RWIN)
 
     # ---------- обработка
     def _worker(self):
