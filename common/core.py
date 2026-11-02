@@ -13,6 +13,7 @@ WoW-переводчик чата: русский <-> английский.
 import json
 import os
 import re
+import socket
 from collections import Counter
 import shutil
 import sys
@@ -127,6 +128,50 @@ def detect_direction(text):
 
 UA = "Mozilla/5.0"
 UA_BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+
+
+# Сначала IPv4: у многих (роутер, провайдер) IPv6 есть в DNS, но подключения по нему отклоняются.
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _getaddrinfo_v4_first(*args, **kw):
+    res = _orig_getaddrinfo(*args, **kw)
+    return sorted(res, key=lambda r: 0 if r[0] == socket.AF_INET else 1)
+
+
+socket.getaddrinfo = _getaddrinfo_v4_first
+
+NET_TEST_HOSTS = ["translate.googleapis.com", "translate.yandex.net", "api.mymemory.translated.net",
+                  "www.bing.com", "speller.yandex.net"]
+
+
+def net_diagnostics(timeout=3):
+    """Подробная проверка сети для журнала: какие адреса у сервисов и подключается ли к каждому."""
+    lines = [f"сеть: прокси системы {urllib.request.getproxies() or 'нет'}"]
+    for host in NET_TEST_HOSTS:
+        try:
+            addrs = []
+            for fam, _, _, _, sa in _orig_getaddrinfo(host, 443, 0, socket.SOCK_STREAM):
+                if sa[0] not in [a[1] for a in addrs]:
+                    addrs.append(("IPv4" if fam == socket.AF_INET else "IPv6", sa[0], fam, sa))
+        except Exception as e:
+            lines.append(f"  {host}: DNS не нашёл адрес ({e})")
+            continue
+        for kind, ip, fam, sa in addrs[:4]:
+            t = time.time()
+            s = socket.socket(fam, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            try:
+                s.connect(sa)
+                res = "подключился"
+            except Exception as e:
+                res = f"ошибка: {e!r}"
+            finally:
+                s.close()
+            lines.append(f"  {host} {kind} {ip}: {res} за {time.time() - t:.2f} с")
+    for ln in lines:
+        log(ln)
+    return lines
 
 
 _DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # без системного прокси

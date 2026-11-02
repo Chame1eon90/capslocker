@@ -1017,6 +1017,9 @@ class AppBase(ctk.CTk):
                         parts.append(f"{name} ✖")
                         lines.append(f"✖  {name}: {info}")
                 good = [k for k, v in res.items() if v[0]]
+                if len(good) < len(res):
+                    lines.append("Подробности о сети — в журнале (log.txt в «Папке с данными»):\n"
+                                 + "\n".join(core.net_diagnostics()))
                 self.set_status("  ".join(parts), GREEN if good else RED)
                 self.ui("info", "Проверка онлайн-сервисов\n(фраза «Привет, нужен танк в подземелье»)\n\n"
                         + "\n\n".join(lines))
