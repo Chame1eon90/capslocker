@@ -209,6 +209,16 @@ def process_name(hwnd):
         return ""
 
 
+# Игры, где автоисправление не перехватывает пробел: там пробел — это прыжок, а буквы — движение.
+# Сравниваем начало имени процесса: Wow.exe, WowClassic.exe, Wow-64.exe и т. п.
+GAME_PREFIXES = ("wow",)
+
+
+def is_game(name):
+    name = (name or "").lower()
+    return any(name.startswith(p) for p in GAME_PREFIXES)
+
+
 def get_clipboard():
     import pyperclip
     try:
@@ -319,7 +329,8 @@ class Engine:
                                     and not self._combo_held():
                                 if down:
                                     self.pending.append((kb.vkCode, kb.scanCode, kb.flags, _down(VK_SHIFT)))
-                                return 1  # придержали — отправим после замены
+                                    return 1  # придержали — отправим после замены
+                                # отпускание пропускаем: иначе клавиша, зажатая раньше, «залипнет» в программе
                     if kb.vkCode == VK_CAPITAL and not injected and self.settings.get("enabled", True):
                         self.q.put(("caps", down, _down(VK_SHIFT)))
                         return 1  # глотаем CapsLock — дальше решаем сами
@@ -483,7 +494,8 @@ class Engine:
         key = (hwnd, self.settings.get("auto_only", ""), self.settings.get("exclude", ""))
         if c and c[0] == key:
             return c[1]
-        ok = not self._excluded(hwnd) and self._auto_allowed(process_name(hwnd))
+        name = process_name(hwnd)
+        ok = not self._excluded(hwnd) and not is_game(name) and self._auto_allowed(name)
         self._here_cache = (key, ok)
         return ok
 
@@ -504,7 +516,9 @@ class Engine:
             self.buf.append((SPACE_SCAN, shift, self.caps_on))
             self.last_type = time.time()
             if not self._auto_check(hwnd):
-                type_text(" ")
+                # настоящее нажатие клавиши, а не символ: так пробел видят и игры, и сочетания клавиш
+                time.sleep(0.02)
+                _send([_key_input(VK_SPACE, scan=SPACE_SCAN), _key_input(VK_SPACE, True, scan=SPACE_SCAN)])
         finally:
             self._flush_pending(hwnd)
 
@@ -518,7 +532,8 @@ class Engine:
         while i > 0 and self.buf[i - 1][0] != SPACE_SCAN:
             i -= 1
         keys = self.buf[i:j]
-        if not keys or self._excluded(hwnd) or not self._auto_allowed(process_name(hwnd)):
+        name = process_name(hwnd)
+        if not keys or self._excluded(hwnd) or is_game(name) or not self._auto_allowed(name):
             return False
         src = self._lang(hwnd)
         if src not in ("ru", "en"):
