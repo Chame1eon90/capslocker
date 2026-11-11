@@ -1211,10 +1211,14 @@ class AutoLayout:
             return False
         if not set(c) <= (self.RU if lang == "ru" else self.EN):
             return False
-        if is_protected(c) or c in self.SLANG:
-            return True
         other = "en" if lang == "ru" else "ru"
         alt = self._core(convert_text(text, lang)[0])
+        if len(c) <= 2 and alt and len(alt) == len(c) and set(alt) <= (self.RU if other == "ru" else self.EN) \
+                and c not in self.skip and c not in self.SLANG \
+                and self._decide_short(text, c, alt, lang, other, is_protected):
+            return False   # «lf» — это «да», набранное не в той раскладке, хоть «LF» и есть в игровом словаре
+        if is_protected(c) or c in self.SLANG:
+            return True
         if len(c) <= 2:
             # короткие слова часто совпадают случайно: считаем правильными только очень частые,
             # и только если в другой раскладке это не такое же частое слово
