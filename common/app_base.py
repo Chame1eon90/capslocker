@@ -109,6 +109,14 @@ class AppBase(ctk.CTk):
             for k, v in caps_defaults.items():
                 self.settings["caps"].setdefault(k, v)
         self.caps_settings = self.settings["caps"]
+        # Однократное отключение автоматических исправлений после обновления.
+        # Ручные действия по горячим клавишам (CapsLock/F8) остаются доступными.
+        if not self.settings.get("automatic_corrections_disabled_v1"):
+            self.caps_settings["auto"] = False
+            self.settings["spell_before_translate"] = False
+            self.settings["spell_punct"] = False
+            self.settings["automatic_corrections_disabled_v1"] = True
+            save_settings(self.settings)
         self.settings.setdefault("autostart", False)
         self.settings.setdefault("first_run", True)
         self.settings.setdefault("tab", "tr")
