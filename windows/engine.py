@@ -211,7 +211,7 @@ def process_name(hwnd):
 
 # Игры, где автоисправление не перехватывает пробел: там пробел — это прыжок, а буквы — движение.
 # Сравниваем начало имени процесса: Wow.exe, WowClassic.exe, Wow-64.exe и т. п.
-GAME_PREFIXES = ("wow",)
+GAME_PREFIXES = ("wow", "fortniteclient")
 
 
 def is_game(name):
