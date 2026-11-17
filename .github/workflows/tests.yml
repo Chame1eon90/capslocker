@@ -2,9 +2,9 @@ name: Проверка раскладки
 
 on:
   push:
-    paths: ["common/core.py", "common/layouts.py", "tests/**", ".github/workflows/tests.yml"]
+    paths: ["common/**", "windows/engine.py", "mac/mac_input.py", "tests/**", ".github/workflows/tests.yml"]
   pull_request:
-    paths: ["common/core.py", "common/layouts.py", "tests/**", ".github/workflows/tests.yml"]
+    paths: ["common/**", "windows/engine.py", "mac/mac_input.py", "tests/**", ".github/workflows/tests.yml"]
 
 permissions:
   contents: read

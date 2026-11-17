@@ -16,7 +16,7 @@ import time
 import traceback
 from ctypes import wintypes
 
-from layouts import KEYS, SPACE_SCAN, render, convert_text, key_char, detect_text_lang
+from layouts import KEYS, SPACE_SCAN, render, convert_text, detect_text_lang
 
 from core import log  # общий журнал Капслокера
 
@@ -36,7 +36,6 @@ MARKER = 0x0CAF5F1C  # метка наших собственных нажати
 
 VK_BACK, VK_TAB, VK_RETURN, VK_SHIFT, VK_CONTROL, VK_MENU = 0x08, 0x09, 0x0D, 0x10, 0x11, 0x12
 VK_CAPITAL, VK_SPACE, VK_LWIN, VK_RWIN = 0x14, 0x20, 0x5B, 0x5C
-MOD_GROUP = {0x11, 0x12, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C}   # Ctrl, Alt, Win
 MODIFIER_VKS = {0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C, VK_CAPITAL}
 
 INPUT_KEYBOARD = 1
@@ -209,16 +208,6 @@ def process_name(hwnd):
         return ""
 
 
-# Игры, где автоисправление не перехватывает пробел: там пробел — это прыжок, а буквы — движение.
-# Сравниваем начало имени процесса: Wow.exe, WowClassic.exe, Wow-64.exe и т. п.
-GAME_PREFIXES = ("wow", "fortniteclient")
-
-
-def is_game(name):
-    name = (name or "").lower()
-    return any(name.startswith(p) for p in GAME_PREFIXES)
-
-
 def get_clipboard():
     import pyperclip
     try:
@@ -260,17 +249,7 @@ class Engine:
         self.buf_hwnd = None
         self.last_type = 0.0     # когда последний раз что-то набрали
         self.last_fix = None    # для отмены
-        self.auto = None        # core.AutoLayout — автоматическое исправление (если включено)
-        self.on_auto_skip = None  # функция(слово): автоисправление отменили — больше это слово не трогать
-        # пока идёт автоисправление, нажатия придерживаем и потом отправляем сами — иначе буквы,
-        # набранные во время замены, попадут в середину слова
-        self.hold = False
-        self.hold_since = 0.0
-        self.pending = []
-        self.hold_lock = threading.Lock()
-        self.mods_held = set()   # зажатые Ctrl/Alt/Win (по нашему перехвату)
-        self.mods_time = 0.0
-        self.lang_hint = None    # (hwnd, язык, время): раскладка, на которую только что переключили
+        self.auto = None        # словари для умного ручного CapsLock
         self.caps_down = False
         self.caps_press_id = 0
         self.caps_toggled = False
@@ -318,29 +297,9 @@ class Engine:
                 if kb.dwExtraInfo != MARKER:
                     down = wparam in (WM_KEYDOWN, WM_SYSKEYDOWN)
                     injected = bool(kb.flags & LLKHF_INJECTED)
-                    if kb.vkCode in MOD_GROUP:
-                        # сами запоминаем, какие Ctrl/Alt/Win зажаты: другие программы (например, Handy
-                        # с сочетанием Ctrl+Пробел) могут «съесть» нажатие Ctrl, и система его не увидит
-                        (self.mods_held.add if down else self.mods_held.discard)(kb.vkCode)
-                        self.mods_time = time.time()
-                    if self.hold and not injected and kb.vkCode not in MODIFIER_VKS:
-                        with self.hold_lock:
-                            if self.hold and time.time() - self.hold_since < 2.0 \
-                                    and not self._combo_held():
-                                if down:
-                                    self.pending.append((kb.vkCode, kb.scanCode, kb.flags, _down(VK_SHIFT)))
-                                    return 1  # придержали — отправим после замены
-                                # отпускание пропускаем: иначе клавиша, зажатая раньше, «залипнет» в программе
                     if kb.vkCode == VK_CAPITAL and not injected and self.settings.get("enabled", True):
                         self.q.put(("caps", down, _down(VK_SHIFT)))
                         return 1  # глотаем CapsLock — дальше решаем сами
-                    if down and kb.scanCode == SPACE_SCAN and not injected and self._auto_on() \
-                            and not self._combo_held() and self._auto_here():
-                        with self.hold_lock:
-                            self.hold, self.hold_since = True, time.time()
-                        # пробел печатаем сами после проверки — так он точно не опередит замену
-                        self.q.put(("space_auto", _down(VK_SHIFT)))
-                        return 1
                     if down:
                         self.q.put(("key", kb.vkCode, kb.scanCode, kb.flags, injected,
                                     _down(VK_SHIFT), _down(VK_CONTROL), _down(VK_MENU),
@@ -349,15 +308,6 @@ class Engine:
             pass
         return user32.CallNextHookEx(None, n, wparam, lparam)
 
-    def _combo_held(self):
-        """Зажат Ctrl, Alt или Win — значит, это сочетание клавиш (Ctrl+Пробел и т. п.), а не набор текста."""
-        if self.mods_held:
-            # отпускание могло потеряться (например, Win+L) — через пару секунд без нажатий забываем
-            if time.time() - self.mods_time < 3.0 or any(_down(vk) for vk in self.mods_held):
-                return True
-            self.mods_held.clear()
-        return _down(VK_CONTROL) or _down(VK_MENU) or _down(VK_LWIN) or _down(VK_RWIN)
-
     # ---------- обработка
     def _worker(self):
         while True:
@@ -365,8 +315,6 @@ class Engine:
             try:
                 if ev[0] == "key":
                     self._on_key(*ev[1:])
-                elif ev[0] == "space_auto":
-                    self._on_space_auto(ev[1])
                 elif ev[0] == "caps":
                     self._on_caps(*ev[1:])
                 elif ev[0] == "hold":
@@ -435,8 +383,6 @@ class Engine:
             self.last_type = time.time()
             if len(self.buf) > 400:
                 self.buf = self.buf[-400:]
-            if scan == SPACE_SCAN:
-                self._flush_pending(hwnd)
             return
         self.reset()  # Enter, Tab, стрелки, Esc и т. п.
 
@@ -484,110 +430,6 @@ class Engine:
         return any(name == e or name == e + ".exe" for e in ex)
 
     # ---------- действия
-    def _auto_on(self):
-        return bool(self.settings.get("auto") and self.settings.get("enabled", True) and self.auto and self.auto.ready())
-
-    def _auto_here(self):
-        """Автоисправление работает в активном окне? (запоминаем по окну, чтобы перехват был быстрым)"""
-        hwnd = foreground()
-        c = getattr(self, "_here_cache", None)
-        key = (hwnd, self.settings.get("auto_only", ""), self.settings.get("exclude", ""))
-        if c and c[0] == key:
-            return c[1]
-        name = process_name(hwnd)
-        ok = not self._excluded(hwnd) and not is_game(name) and self._auto_allowed(name)
-        self._here_cache = (key, ok)
-        return ok
-
-    def _lang(self, hwnd):
-        h = self.lang_hint
-        if h and h[0] == hwnd and time.time() - h[2] < 1.5:
-            return h[1]
-        return window_lang(hwnd)
-
-    def _on_space_auto(self, shift):
-        """Пробел, который мы придержали: проверить слово перед ним, напечатать пробел и всё, что набрали дальше."""
-        self.last_fix = None
-        hwnd = foreground()
-        try:
-            if hwnd != self.buf_hwnd:
-                self.buf = []
-            self.buf_hwnd = hwnd
-            self.buf.append((SPACE_SCAN, shift, self.caps_on))
-            self.last_type = time.time()
-            if not self._auto_check(hwnd):
-                # настоящее нажатие клавиши, а не символ: так пробел видят и игры, и сочетания клавиш
-                time.sleep(0.02)
-                _send([_key_input(VK_SPACE, scan=SPACE_SCAN), _key_input(VK_SPACE, True, scan=SPACE_SCAN)])
-        finally:
-            self._flush_pending(hwnd)
-
-    def _auto_check(self, hwnd):
-        """Слово перед пробелом (пробел ещё не напечатан) набрано не в той раскладке? Тогда заменить его
-        вместе с пробелом и переключить язык. Возвращает True, если заменили."""
-        if not self._auto_on():
-            return False
-        j = len(self.buf) - 1                      # buf[-1] — только что нажатый пробел
-        i = j
-        while i > 0 and self.buf[i - 1][0] != SPACE_SCAN:
-            i -= 1
-        keys = self.buf[i:j]
-        name = process_name(hwnd)
-        if not keys or self._excluded(hwnd) or is_game(name) or not self._auto_allowed(name):
-            return False
-        src = self._lang(hwnd)
-        if src not in ("ru", "en"):
-            return False
-        tgt = "en" if src == "ru" else "ru"
-        old, new = render(keys, src), render(keys, tgt)
-        if not self.auto.decide(old, new, src):
-            return False
-        tap(VK_BACK, len(keys))
-        type_text(new + " ")
-        switch_layout(hwnd, tgt)
-        self.lang_hint = (hwnd, tgt, time.time())
-        self.reset()
-        self.buf_hwnd = hwnd
-        self.last_fix = {"hwnd": hwnd, "old": old + " ", "new": new + " ", "src": src, "auto": True}
-        self.on_event("auto", f"{old} → {new}")
-        return True
-
-    def _flush_pending(self, hwnd):
-        """Отправить нажатия, придержанные во время проверки, — уже в правильной раскладке."""
-        while True:
-            with self.hold_lock:
-                items, self.pending = self.pending, []
-                if not items:
-                    self.hold = False
-                    return
-            for vk, scan, flags, shift in items:
-                extended = bool(flags & 1)
-                if (scan in KEYS or scan == SPACE_SCAN) and not extended:
-                    ch = key_char(scan, shift, self.caps_on, self._lang(hwnd) or "en")
-                    self.buf.append((scan, shift, self.caps_on))
-                    self.last_type = time.time()
-                    if scan == SPACE_SCAN:
-                        self.last_fix = None
-                        if self._auto_check(hwnd):
-                            continue
-                    if ch:
-                        type_text(ch)
-                elif vk == VK_BACK:
-                    tap(VK_BACK)
-                    if self.buf:
-                        self.buf.pop()
-                else:
-                    _send([_key_input(vk), _key_input(vk, True)])
-                    self.reset()
-
-    def _auto_allowed(self, name):
-        """Автоисправление — только в выбранных программах (пустой список — везде)."""
-        only = [x.strip().lower() for x in self.settings.get("auto_only", "").replace(";", ",").split(",") if x.strip()]
-        if not only:
-            return True
-        name = (name or "").lower().replace(".exe", "").replace(".app", "")
-        return bool(name) and any(e.replace(".exe", "").replace(".app", "") in name for e in only)
-
     def _smart(self):
         return bool(self.auto and self.auto.ready() and self.settings.get("scope", "phrase") == "phrase")
 
@@ -600,11 +442,6 @@ class Engine:
             switch_layout(hwnd, lf["src"])
             self.last_fix = None
             self.on_event("undo", lf["old"].strip())
-            if lf.get("auto") and self.auto:
-                w = lf["old"].strip().lower()
-                self.auto.skip.add(w)
-                if self.on_auto_skip:
-                    self.on_auto_skip(w)
             return
         n = self._segment(window_lang(hwnd)) if hwnd == self.buf_hwnd else 0
         if n == 0 and self._fix_existing(hwnd):
