@@ -1194,11 +1194,25 @@ class AutoLayout:
     def _core(self, s):
         return re.sub(r"^\W+|\W+$", "", s).lower()
 
-    def _known(self, w, lang, freq=0):
+    def _frequency(self, w, lang):
         if lang == "ru":
             w2 = w.replace("ё", "е")
-            return max(self.d["ru"].get(w, 0), self.d["ru"].get(w2, 0), self.d["ru"].get(w2.replace("е", "ё"), 0)) > freq
-        return self.d["en"].get(w, 0) > freq
+            return max(self.d["ru"].get(w, 0), self.d["ru"].get(w2, 0), self.d["ru"].get(w2.replace("е", "ё"), 0))
+        return self.d["en"].get(w, 0)
+
+    def _known(self, w, lang, freq=0):
+        return self._frequency(w, lang) > freq
+
+    def _prefer_short_ru(self, text, c, a, lang):
+        """Редкое английское совпадение не должно блокировать частое русское слово: tot → еще.
+        Сравнение частот используем только для коротких слов и с большим запасом:
+        частоты двух словарей собраны по разным корпусам, это не вероятности."""
+        if lang != "en" or not 3 <= len(c) <= 4 or text.strip().isupper():
+            return False
+        if len(a) != len(c) or not set(a) <= self.RU or c in self.skip or c in self.SLANG:
+            return False
+        fc, fa = self._frequency(c, "en"), self._frequency(a, "ru")
+        return fc < 1000 and fa >= 10000 and fa >= 50 * fc
 
     def _plausible(self, w, lang):
         c = self.bi[lang]
@@ -1219,6 +1233,8 @@ class AutoLayout:
             return False   # «lf» — это «да», набранное не в той раскладке, хоть «LF» и есть в игровом словаре
         if is_protected(c) or c in self.SLANG:
             return True
+        if not is_protected(alt) and self._prefer_short_ru(text, c, alt, lang):
+            return False
         if len(c) <= 2:
             # короткие слова часто совпадают случайно: считаем правильными только очень частые,
             # и только если в другой раскладке это не такое же частое слово
@@ -1279,6 +1295,8 @@ class AutoLayout:
             return self._decide_short(cur_text, c, a, cur, other, protected)
         if protected(c) or protected(a):
             return False
+        if self._prefer_short_ru(cur_text, c, a, cur):
+            return True
         if set(c) <= (self.RU if cur == "ru" else self.EN):
             # английский словарь большой — хватает его; русский маленький, поэтому
             # ещё проверяем, похоже ли слово на русское по сочетаниям букв
